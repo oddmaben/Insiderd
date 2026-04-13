@@ -2,6 +2,7 @@ interface FetchOptions {
   timeout?: number;
   retries?: number;
   retryDelay?: number;
+  skipCircuitBreaker?: boolean;
 }
 
 enum CircuitState {
@@ -136,10 +137,11 @@ export async function fetchWithRetry<T>(
   const {
     timeout = 10000,
     retries = 3,
-    retryDelay = 1000
+    retryDelay = 1000,
+    skipCircuitBreaker = false
   } = options;
 
-  if (!circuitBreaker.canAttempt()) {
+  if (!skipCircuitBreaker && !circuitBreaker.canAttempt()) {
     console.warn('[FETCH] Circuit breaker OPEN, skipping request');
     return null;
   }
@@ -168,7 +170,9 @@ export async function fetchWithRetry<T>(
 
         const data = await response.json() as T;
         
-        circuitBreaker.recordSuccess();
+        if (!skipCircuitBreaker) {
+          circuitBreaker.recordSuccess();
+        }
         
         return data;
 
@@ -177,7 +181,9 @@ export async function fetchWithRetry<T>(
         
         if (isLastAttempt) {
           console.error(`[FETCH] Failed after ${retries} attempts:`, safeUrl);
-          circuitBreaker.recordFailure();
+          if (!skipCircuitBreaker) {
+            circuitBreaker.recordFailure();
+          }
           return null;
         }
 

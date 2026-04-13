@@ -56,6 +56,7 @@ interface CacheEntry {
 const CACHE_FILE = path.join(process.cwd(), 'data', 'seen_pairs.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
+const SEARCH_TERMS_PER_SCAN = 8;
 const SEARCH_TERMS = [
   'pumpfun',
   'mayhem',
@@ -116,6 +117,7 @@ function saveCache() {
 
 const seenPairs = loadCache();
 let lastCleanup = Date.now();
+let searchTermCursor = 0;
 
 export async function fetchNewPairs(): Promise<TokenPair[]> {
   try {
@@ -125,8 +127,9 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
     }
 
     const allPairs: TokenPair[] = [];
-    
-    const searchPromises = SEARCH_TERMS.map(async (term) => {
+    const termsForThisScan = getSearchTermsForScan();
+
+    const searchPromises = termsForThisScan.map(async (term) => {
       try {
         const url = `${config.api.dexscreener}/search?q=${encodeURIComponent(term)}`;
         const data = await fetchWithRetry<DexScreenerResponse>(url, {
@@ -216,7 +219,8 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
     const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
     const data = await fetchWithRetry<DexScreenerPairResponse>(url, {
       timeout: 8000,
-      retries: 2
+      retries: 2,
+      skipCircuitBreaker: true
     });
 
     const hydrated = data?.pairs?.[0] || data?.pair;
@@ -231,6 +235,20 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
   }
 
   return pair;
+}
+
+function getSearchTermsForScan(): string[] {
+  if (SEARCH_TERMS.length <= SEARCH_TERMS_PER_SCAN) {
+    return SEARCH_TERMS;
+  }
+
+  const selected: string[] = [];
+  for (let i = 0; i < SEARCH_TERMS_PER_SCAN; i++) {
+    const idx = (searchTermCursor + i) % SEARCH_TERMS.length;
+    selected.push(SEARCH_TERMS[idx]);
+  }
+  searchTermCursor = (searchTermCursor + SEARCH_TERMS_PER_SCAN) % SEARCH_TERMS.length;
+  return selected;
 }
 
 function cleanOldCache(): void {

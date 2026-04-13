@@ -106,8 +106,8 @@ function sanitizeUrl(url) {
     }
 }
 export async function fetchWithRetry(url, options = {}) {
-    const { timeout = 10000, retries = 3, retryDelay = 1000 } = options;
-    if (!circuitBreaker.canAttempt()) {
+    const { timeout = 10000, retries = 3, retryDelay = 1000, skipCircuitBreaker = false } = options;
+    if (!skipCircuitBreaker && !circuitBreaker.canAttempt()) {
         console.warn('[FETCH] Circuit breaker OPEN, skipping request');
         return null;
     }
@@ -129,14 +129,18 @@ export async function fetchWithRetry(url, options = {}) {
                     throw new Error(`HTTP ${response.status}`);
                 }
                 const data = await response.json();
-                circuitBreaker.recordSuccess();
+                if (!skipCircuitBreaker) {
+                    circuitBreaker.recordSuccess();
+                }
                 return data;
             }
             catch (error) {
                 const isLastAttempt = attempt === retries;
                 if (isLastAttempt) {
                     console.error(`[FETCH] Failed after ${retries} attempts:`, safeUrl);
-                    circuitBreaker.recordFailure();
+                    if (!skipCircuitBreaker) {
+                        circuitBreaker.recordFailure();
+                    }
                     return null;
                 }
                 const delay = addJitter(retryDelay * Math.pow(2, attempt - 1));

@@ -2,6 +2,7 @@ interface FetchOptions {
     timeout?: number;
     retries?: number;
     retryDelay?: number;
+    skipCircuitBreaker?: boolean;
 }
 export declare function fetchWithRetry<T>(url: string, options?: FetchOptions): Promise<T | null>;
 export declare function sleep(ms: number): Promise<void>;

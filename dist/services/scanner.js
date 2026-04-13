@@ -8,6 +8,7 @@ import { checkRugStatus } from './rugcheck.js';
 const CACHE_FILE = path.join(process.cwd(), 'data', 'seen_pairs.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
+const SEARCH_TERMS_PER_SCAN = 8;
 const SEARCH_TERMS = [
     'pumpfun',
     'mayhem',
@@ -66,6 +67,7 @@ function saveCache() {
 }
 const seenPairs = loadCache();
 let lastCleanup = Date.now();
+let searchTermCursor = 0;
 export async function fetchNewPairs() {
     try {
         if (Date.now() - lastCleanup > CACHE_CLEANUP_INTERVAL) {
@@ -73,7 +75,8 @@ export async function fetchNewPairs() {
             lastCleanup = Date.now();
         }
         const allPairs = [];
-        const searchPromises = SEARCH_TERMS.map(async (term) => {
+        const termsForThisScan = getSearchTermsForScan();
+        const searchPromises = termsForThisScan.map(async (term) => {
             try {
                 const url = `${config.api.dexscreener}/search?q=${encodeURIComponent(term)}`;
                 const data = await fetchWithRetry(url, {
@@ -146,7 +149,8 @@ async function hydratePair(pair) {
         const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
         const data = await fetchWithRetry(url, {
             timeout: 8000,
-            retries: 2
+            retries: 2,
+            skipCircuitBreaker: true
         });
         const hydrated = data?.pairs?.[0] || data?.pair;
         if (hydrated) {
@@ -160,6 +164,18 @@ async function hydratePair(pair) {
         logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
     }
     return pair;
+}
+function getSearchTermsForScan() {
+    if (SEARCH_TERMS.length <= SEARCH_TERMS_PER_SCAN) {
+        return SEARCH_TERMS;
+    }
+    const selected = [];
+    for (let i = 0; i < SEARCH_TERMS_PER_SCAN; i++) {
+        const idx = (searchTermCursor + i) % SEARCH_TERMS.length;
+        selected.push(SEARCH_TERMS[idx]);
+    }
+    searchTermCursor = (searchTermCursor + SEARCH_TERMS_PER_SCAN) % SEARCH_TERMS.length;
+    return selected;
 }
 function cleanOldCache() {
     const now = Date.now();
