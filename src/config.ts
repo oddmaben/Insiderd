@@ -28,6 +28,7 @@ interface ApiConfig {
 
 interface SecurityConfig {
   maxRugcheckScore: number;
+  enableRugcheck: boolean;
 }
 
 export interface Config {
@@ -86,7 +87,8 @@ export const config: Config = {
   },
 
   security: {
-    maxRugcheckScore: getEnvNumber('MAX_RUGCHECK_SCORE', 1200)
+    maxRugcheckScore: getEnvNumber('MAX_RUGCHECK_SCORE', 1200),
+    enableRugcheck: process.env.ENABLE_RUGCHECK === 'true'
   },
   
   enableLogs: process.env.ENABLE_LOGS !== 'false'
@@ -103,3 +105,4 @@ console.log(`[CONFIG] Min liquidity: $${config.scanner.minLiquidity}`);
 console.log(`[CONFIG] Min volume (5m): $${config.scanner.minVolume5m}`);
 console.log(`[CONFIG] Market cap range: $${config.scanner.minMarketCap} - $${config.scanner.maxMarketCap}`);
 console.log(`[CONFIG] Max RugCheck score: ${config.security.maxRugcheckScore}`);
+console.log(`[CONFIG] RugCheck enabled: ${config.security.enableRugcheck}`);

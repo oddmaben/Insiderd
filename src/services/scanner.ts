@@ -210,8 +210,10 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
       const isLocked = await isLiquidityLocked(p);
       if (!isLocked) continue;
 
-      const isSafe = await checkRugStatus(p);
-      if (!isSafe) continue;
+      if (config.security.enableRugcheck) {
+        const isSafe = await checkRugStatus(p);
+        if (!isSafe) continue;
+      }
 
       if (!hasPositiveLiquidity(p)) {
         queuePendingLiquidityPair(p, now);
@@ -501,6 +503,13 @@ function expirePendingPair(pairAddress: string): void {
 
 async function hydrateLiquidityFromBirdeye(pair: TokenPair): Promise<TokenPair> {
   if (hasPositiveLiquidity(pair)) {
+    return pair;
+  }
+
+  const volume5m = pair.volume?.m5 || 0;
+  const fdv = pair.fdv || 0;
+  const likelyNoiseToken = volume5m < 300 && fdv < config.scanner.minMarketCap;
+  if (likelyNoiseToken) {
     return pair;
   }
 
