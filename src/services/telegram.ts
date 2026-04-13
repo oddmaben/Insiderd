@@ -30,6 +30,7 @@ async function rateLimitWait(): Promise<void> {
 interface SendOptions {
   photoUrl?: string;
   replyToMessageId?: number;
+  chatId?: string;
 }
 
 function getDexscreenerImageUrl(pair: TokenPair): string {
@@ -101,6 +102,8 @@ async function sendCallWithRetry(
   options: SendOptions = {},
   attempt = 1
 ): Promise<number | null> {
+  const targetChatId = options.chatId || config.telegram.channelId;
+
   try {
     const payloadBase = {
       parse_mode: 'HTML' as const,
@@ -112,7 +115,7 @@ async function sendCallWithRetry(
 
     if (options.photoUrl) {
       const sent = await bot.telegram.sendPhoto(
-        config.telegram.channelId,
+        targetChatId,
         options.photoUrl,
         {
           caption: message.slice(0, 1024),
@@ -123,7 +126,7 @@ async function sendCallWithRetry(
       return sent.message_id;
     }
 
-    const sent = await bot.telegram.sendMessage(config.telegram.channelId, message, payloadBase);
+    const sent = await bot.telegram.sendMessage(targetChatId, message, payloadBase);
     return sent.message_id;
   } catch (error: any) {
     if (options.photoUrl) {
@@ -209,6 +212,7 @@ export async function sendAlert(
     }
     
     logger.success(`📤 Alert sent: ${pair.baseToken.symbol}`);
+    await pinPassedAlert(messageId);
     startMultiplierTracking(pair, {
       initialMessageId: messageId,
       photoUrl
@@ -249,6 +253,7 @@ function formatMessage(pair: TokenPair, filterResult: FilterResult): string {
 
   let msg = '';
 
+  msg += `<b>✅ INSIDER PASS CALL</b>\n`;
   msg += `Insider Dinero\n`;
   msg += `${name}\n`;
   msg += `${pair.baseToken.address}\n\n`;
@@ -268,6 +273,36 @@ function formatMessage(pair: TokenPair, filterResult: FilterResult): string {
   msg += `\nPM @DCKXE for Insider access.`;
 
   return msg;
+}
+
+function formatTokenEvaluationLog(pair: TokenPair, filterResult: FilterResult): string {
+  const status = filterResult.passed ? '✅ PASS' : '❌ FAIL';
+  const reason = filterResult.passed ? 'All active filters passed' : (filterResult.reason || 'Unknown rejection');
+  const mc = formatCurrency(filterResult.stats.marketCap);
+  const liq = formatCurrency(filterResult.stats.liquidity);
+  const vol = formatCurrency(filterResult.stats.volume5m);
+
+  let msg = '';
+  msg += `<b>${status}</b> • $${pair.baseToken.symbol}\n`;
+  msg += `${pair.baseToken.name}\n`;
+  msg += `<code>${pair.baseToken.address}</code>\n\n`;
+  msg += `Reason: ${reason}\n`;
+  msg += `MC: ${mc} | Liq: ${liq} | Vol5m: ${vol}\n`;
+  msg += `Dex: ${pair.dexId || 'unknown'}\n`;
+  msg += `${pair.url}`;
+
+  return msg;
+}
+
+async function pinPassedAlert(messageId: number): Promise<void> {
+  try {
+    await bot.telegram.pinChatMessage(config.telegram.channelId, messageId, {
+      disable_notification: true
+    });
+    logger.success(`[TELEGRAM] Pinned passed alert (${messageId})`);
+  } catch (error: any) {
+    logger.warn(`[TELEGRAM] Could not pin alert (${messageId}): ${error?.message || error}`);
+  }
 }
 
 export async function sendRawMessage(message: string): Promise<boolean> {
@@ -294,6 +329,58 @@ export async function sendRawCallMessage(
     logger.error('Error sending raw message:', error.message);
     return null;
   }
+}
+
+export async function sendTokenEvaluationLog(
+  pair: TokenPair,
+  filterResult: FilterResult
+): Promise<void> {
+  if (!isReady) {
+    const reconnected = await initBot();
+    if (!reconnected) {
+      logger.warn('[TELEGRAM] Skipping token evaluation log: bot not ready');
+      return;
+    }
+  }
+
+  const message = formatTokenEvaluationLog(pair, filterResult);
+  const photoUrl = getDexscreenerImageUrl(pair);
+
+  await sendCallWithRetry(message, {
+    photoUrl,
+    chatId: config.telegram.logChatId
+  });
+}
+
+export async function sendMissedWinnerLog(
+  pair: TokenPair,
+  status: 'PASSED' | 'REJECTED',
+  reason: string | undefined,
+  baseMc: number,
+  currentMc: number,
+  elapsedMinutes: number
+): Promise<void> {
+  if (!isReady) {
+    const reconnected = await initBot();
+    if (!reconnected) {
+      logger.warn('[TELEGRAM] Skipping 3x performance log: bot not ready');
+      return;
+    }
+  }
+
+  const multiple = baseMc > 0 ? (currentMc / baseMc).toFixed(2) : '0.00';
+  const context = status === 'REJECTED' ? `Rejected reason: ${reason || 'Unknown'}` : 'Token was passed and alerted.';
+  const msg = `🚨 <b>3X PERFORMANCE HIT</b>\n` +
+              `$${pair.baseToken.symbol} hit <b>${multiple}x</b> in ${elapsedMinutes.toFixed(1)}m\n` +
+              `Base MC: ${formatCurrency(baseMc)} → Current MC: ${formatCurrency(currentMc)}\n` +
+              `Status: ${status}\n` +
+              `${context}\n` +
+              `${pair.url}`;
+
+  await sendCallWithRetry(msg, {
+    photoUrl: getDexscreenerImageUrl(pair),
+    chatId: config.telegram.logChatId
+  });
 }
 
 export async function sendStartup(): Promise<void> {

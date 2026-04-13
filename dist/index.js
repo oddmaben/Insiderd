@@ -2,7 +2,8 @@ import { logger } from './utils/logger.js';
 import { config } from './config.js';
 import { fetchNewPairs, getCacheStats } from './services/scanner.js';
 import { filterToken } from './services/filter.js';
-import { initBot, sendAlert, sendStartup, sendErrorNotification } from './services/telegram.js';
+import { initBot, sendAlert, sendStartup, sendErrorNotification, sendTokenEvaluationLog } from './services/telegram.js';
+import { startPerformanceWatch } from './services/performanceWatch.js';
 import { startHealthServer } from './utils/health.js';
 let scanCount = 0;
 let tokensFound = 0;
@@ -23,6 +24,11 @@ async function scanLoop() {
             try {
                 logger.info(`\n--- Processing: ${pair.baseToken.symbol} ---`);
                 const filterResult = filterToken(pair);
+                await sendTokenEvaluationLog(pair, filterResult);
+                startPerformanceWatch(pair, {
+                    status: filterResult.passed ? 'PASSED' : 'REJECTED',
+                    reason: filterResult.reason
+                });
                 if (!filterResult.passed) {
                     continue;
                 }
