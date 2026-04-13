@@ -80,7 +80,7 @@ async function scanLoop(): Promise<void> {
 
 async function ensureLiquidityCheck(initialPair: TokenPair): Promise<TokenPair> {
   let latestPair = initialPair;
-  let liquidity = latestPair.liquidity?.usd || 0;
+  let liquidity = parseLiquidity(latestPair.liquidity?.usd);
 
   if (liquidity > 0) {
     return latestPair;
@@ -91,7 +91,7 @@ async function ensureLiquidityCheck(initialPair: TokenPair): Promise<TokenPair> 
   for (let attempt = 1; attempt <= LIQUIDITY_RECHECK_ATTEMPTS; attempt++) {
     await new Promise(r => setTimeout(r, LIQUIDITY_RECHECK_DELAY_MS));
     latestPair = await refreshPairData(latestPair);
-    liquidity = latestPair.liquidity?.usd || 0;
+    liquidity = parseLiquidity(latestPair.liquidity?.usd);
 
     if (liquidity > 0) {
       logger.info(`   Liquidity refreshed for ${latestPair.baseToken.symbol}: $${liquidity.toFixed(0)}`);
@@ -101,6 +101,15 @@ async function ensureLiquidityCheck(initialPair: TokenPair): Promise<TokenPair> 
 
   logger.info(`   Liquidity remains $0 for ${latestPair.baseToken.symbol} after retries`);
   return latestPair;
+}
+
+function parseLiquidity(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function healthCheck(): void {

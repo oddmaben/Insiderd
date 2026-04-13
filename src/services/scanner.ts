@@ -62,6 +62,7 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
 const SEARCH_TERMS_PER_SCAN = 4;
 const SEARCH_REQUEST_DELAY_MS = 350;
+const LIQUIDITY_WARMUP_MS = 2 * 60 * 1000;
 const SEARCH_TERMS = [
   'pumpfun',
   'bonk',
@@ -181,6 +182,11 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
 
       const age = now - p.pairCreatedAt;
       if (age > maxAge) continue;
+
+      if (shouldDeferForLiquidityWarmup(p, age)) {
+        logger.debug(`⏳ ${p.baseToken.symbol}: Deferring until liquidity settles`);
+        continue;
+      }
 
       const isLocked = await isLiquidityLocked(p);
       if (!isLocked) continue;
@@ -315,7 +321,34 @@ function pickBestHydrationPair(sourcePair: TokenPair, candidates: TokenPair[]): 
 }
 
 function hasPositiveLiquidity(pair: TokenPair | null): boolean {
-  return (pair?.liquidity?.usd || 0) > 0;
+  return readLiquidityUsd(pair) > 0;
+}
+
+function readLiquidityUsd(pair: TokenPair | null): number {
+  const raw = pair?.liquidity?.usd;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? raw : 0;
+  }
+  if (typeof raw === 'string') {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function shouldDeferForLiquidityWarmup(pair: TokenPair, ageMs: number): boolean {
+  if (ageMs > LIQUIDITY_WARMUP_MS) {
+    return false;
+  }
+
+  const liquidityUsd = readLiquidityUsd(pair);
+  if (liquidityUsd > 0) {
+    return false;
+  }
+
+  const volume5m = pair.volume?.m5 || 0;
+  const marketCap = pair.fdv || 0;
+  return volume5m > 0 || marketCap > 0;
 }
 
 function getSearchTermsForScan(): string[] {

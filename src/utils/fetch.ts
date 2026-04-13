@@ -158,7 +158,9 @@ export async function fetchWithRetry<T>(
           signal: controller.signal,
           headers: {
             'User-Agent': 'MemeScanner/3.0',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'Origin': 'https://dexscreener.com',
+            'Referer': 'https://dexscreener.com/'
           }
         });
 

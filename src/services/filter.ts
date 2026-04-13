@@ -18,10 +18,10 @@ export function filterToken(pair: TokenPair): FilterResult {
   const warnings: string[] = [];
   const symbol = pair.baseToken.symbol;
 
-  const liquidity = pair.liquidity?.usd || 0;
-  const volume5m = pair.volume?.m5 || 0;
-  const priceChange = pair.priceChange?.m5 || 0;
-  const marketCap = pair.fdv || 0;
+  const liquidity = toNumber(pair.liquidity?.usd);
+  const volume5m = toNumber(pair.volume?.m5);
+  const priceChange = toNumber(pair.priceChange?.m5);
+  const marketCap = toNumber(pair.fdv);
 
   const stats = { liquidity, volume5m, priceChange, marketCap };
 
@@ -134,4 +134,13 @@ export function formatCurrency(value: number): string {
   if (value >= 1000000) return `$${(value / 1000000).toFixed(2)}M`;
   if (value >= 1000) return `$${(value / 1000).toFixed(1)}k`;
   return `$${value.toFixed(0)}`;
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
