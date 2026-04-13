@@ -73,6 +73,7 @@ const PENDING_LIQUIDITY_WINDOW_MS = 8 * 60 * 1000;
 const MAX_PENDING_LIQUIDITY_CHECKS = 6;
 const SEARCH_TERMS = [
   'pumpfun',
+  'mayhem',
   'bonk',
   'bonkers',
   'bags',
