@@ -3,6 +3,7 @@ interface FetchOptions {
   retries?: number;
   retryDelay?: number;
   skipCircuitBreaker?: boolean;
+  headers?: Record<string, string>;
 }
 
 enum CircuitState {
@@ -140,7 +141,8 @@ export async function fetchWithRetry<T>(
     timeout = 10000,
     retries = 3,
     retryDelay = 1000,
-    skipCircuitBreaker = false
+    skipCircuitBreaker = false,
+    headers = {}
   } = options;
 
   if (!skipCircuitBreaker && !circuitBreaker.canAttempt()) {
@@ -165,7 +167,8 @@ export async function fetchWithRetry<T>(
             'User-Agent': 'MemeScanner/3.0',
             'Accept': 'application/json',
             'Origin': 'https://dexscreener.com',
-            'Referer': 'https://dexscreener.com/'
+            'Referer': 'https://dexscreener.com/',
+            ...headers
           }
         });
 

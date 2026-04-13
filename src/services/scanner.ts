@@ -5,6 +5,7 @@ import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { isLiquidityLocked } from './liquidityCheck.js';
 import { checkRugStatus } from './rugcheck.js';
+import { getBirdeyeLiquidityUsd, clearBirdeyeCache } from './birdeye.js';
 
 export interface TokenPair {
   chainId: string;
@@ -271,20 +272,21 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
 
     const fallback = await hydrateFromTokenEndpoint(pair);
     if (fallback) {
-      return {
+      const merged = {
         ...(mergedFromPairEndpoint || pair),
         ...fallback
       };
+      return await hydrateLiquidityFromBirdeye(merged);
     }
 
     if (mergedFromPairEndpoint) {
-      return mergedFromPairEndpoint;
+      return await hydrateLiquidityFromBirdeye(mergedFromPairEndpoint);
     }
   } catch (error) {
     logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
   }
 
-  return pair;
+  return hydrateLiquidityFromBirdeye(pair);
 }
 
 async function hydrateFromTokenEndpoint(pair: TokenPair): Promise<TokenPair | null> {
@@ -396,7 +398,7 @@ function queuePendingLiquidityPair(pair: TokenPair, now: number): void {
   const expiredByChecks = existing.checks >= MAX_PENDING_LIQUIDITY_CHECKS;
   const expiredByTime = now - existing.firstSeenAt > PENDING_LIQUIDITY_WINDOW_MS;
   if (expiredByChecks || expiredByTime) {
-    pendingLiquidityPairs.delete(pair.pairAddress);
+    expirePendingPair(pair.pairAddress);
   }
 }
 
@@ -412,7 +414,7 @@ function getPendingRecheckPairs(): TokenPair[] {
     const expiredByChecks = entry.checks >= MAX_PENDING_LIQUIDITY_CHECKS;
     const expiredByTime = now - entry.firstSeenAt > PENDING_LIQUIDITY_WINDOW_MS;
     if (expiredByChecks || expiredByTime) {
-      pendingLiquidityPairs.delete(address);
+      expirePendingPair(address);
       continue;
     }
     rechecks.push(entry.pair);
@@ -485,8 +487,39 @@ export function getCacheStats(): { size: number; oldest: number } {
 export function clearCache(): void {
   seenPairs.clear();
   pendingLiquidityPairs.clear();
+  clearBirdeyeCache();
   if (fs.existsSync(CACHE_FILE)) {
     fs.unlinkSync(CACHE_FILE);
   }
   logger.info('Cache cleared (memory + file)');
+}
+
+function expirePendingPair(pairAddress: string): void {
+  pendingLiquidityPairs.delete(pairAddress);
+  seenPairs.delete(pairAddress);
+}
+
+async function hydrateLiquidityFromBirdeye(pair: TokenPair): Promise<TokenPair> {
+  if (hasPositiveLiquidity(pair)) {
+    return pair;
+  }
+
+  const tokenMint = pair.baseToken?.address;
+  if (!tokenMint) {
+    return pair;
+  }
+
+  const birdeyeLiquidity = await getBirdeyeLiquidityUsd(tokenMint);
+  if (!birdeyeLiquidity || birdeyeLiquidity <= 0) {
+    return pair;
+  }
+
+  logger.debug(`Birdeye liquidity hydration succeeded for ${pair.baseToken.symbol}: $${birdeyeLiquidity.toFixed(0)}`);
+  return {
+    ...pair,
+    liquidity: {
+      ...(pair.liquidity || { usd: 0 }),
+      usd: birdeyeLiquidity
+    }
+  };
 }
