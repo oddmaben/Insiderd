@@ -140,6 +140,9 @@ export async function fetchNewPairs() {
         return [];
     }
 }
+export async function refreshPairData(pair) {
+    return hydratePair(pair);
+}
 async function hydratePair(pair) {
     const needsHydration = !pair.liquidity?.usd || !pair.volume?.m5 || !pair.fdv;
     if (!needsHydration) {

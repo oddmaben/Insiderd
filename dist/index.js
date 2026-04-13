@@ -1,6 +1,6 @@
 import { logger } from './utils/logger.js';
 import { config } from './config.js';
-import { fetchNewPairs, getCacheStats } from './services/scanner.js';
+import { fetchNewPairs, getCacheStats, refreshPairData } from './services/scanner.js';
 import { filterToken } from './services/filter.js';
 import { initBot, sendAlert, sendStartup, sendErrorNotification, sendTokenEvaluationLog } from './services/telegram.js';
 import { startPerformanceWatch } from './services/performanceWatch.js';
@@ -9,6 +9,8 @@ let scanCount = 0;
 let tokensFound = 0;
 let tokensPassed = 0;
 let lastHealthCheck = Date.now();
+const LIQUIDITY_RECHECK_ATTEMPTS = 2;
+const LIQUIDITY_RECHECK_DELAY_MS = 1200;
 async function scanLoop() {
     try {
         scanCount++;
@@ -23,9 +25,10 @@ async function scanLoop() {
         for (const pair of pairs) {
             try {
                 logger.info(`\n--- Processing: ${pair.baseToken.symbol} ---`);
-                const filterResult = filterToken(pair);
-                await sendTokenEvaluationLog(pair, filterResult);
-                startPerformanceWatch(pair, {
+                const pairForFiltering = await ensureLiquidityCheck(pair);
+                const filterResult = filterToken(pairForFiltering);
+                await sendTokenEvaluationLog(pairForFiltering, filterResult);
+                startPerformanceWatch(pairForFiltering, {
                     status: filterResult.passed ? 'PASSED' : 'REJECTED',
                     reason: filterResult.reason
                 });
@@ -35,7 +38,7 @@ async function scanLoop() {
                 tokensPassed++;
                 logger.success(`\n🎯 SAFE TOKEN FOUND: ${pair.baseToken.symbol}`);
                 logger.info(`Total passed: ${tokensPassed}/${tokensFound}`);
-                const sent = await sendAlert(pair, filterResult);
+                const sent = await sendAlert(pairForFiltering, filterResult);
                 if (!sent) {
                     logger.error(`Failed to send alert for ${pair.baseToken.symbol}`);
                 }
@@ -51,6 +54,25 @@ async function scanLoop() {
     catch (error) {
         logger.error('Error in scan loop:', error.message);
     }
+}
+async function ensureLiquidityCheck(initialPair) {
+    let latestPair = initialPair;
+    let liquidity = latestPair.liquidity?.usd || 0;
+    if (liquidity > 0) {
+        return latestPair;
+    }
+    logger.info(`   Liquidity is $0 for ${latestPair.baseToken.symbol}; retrying data fetch...`);
+    for (let attempt = 1; attempt <= LIQUIDITY_RECHECK_ATTEMPTS; attempt++) {
+        await new Promise(r => setTimeout(r, LIQUIDITY_RECHECK_DELAY_MS));
+        latestPair = await refreshPairData(latestPair);
+        liquidity = latestPair.liquidity?.usd || 0;
+        if (liquidity > 0) {
+            logger.info(`   Liquidity refreshed for ${latestPair.baseToken.symbol}: $${liquidity.toFixed(0)}`);
+            return latestPair;
+        }
+    }
+    logger.info(`   Liquidity remains $0 for ${latestPair.baseToken.symbol} after retries`);
+    return latestPair;
 }
 function healthCheck() {
     const now = Date.now();

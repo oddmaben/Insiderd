@@ -31,6 +31,7 @@ export interface TokenPair {
     };
 }
 export declare function fetchNewPairs(): Promise<TokenPair[]>;
+export declare function refreshPairData(pair: TokenPair): Promise<TokenPair>;
 export declare function getAgeMinutes(createdAt: number): number;
 export declare function formatAge(minutes: number): string;
 export declare function getCacheStats(): {

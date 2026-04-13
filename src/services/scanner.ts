@@ -209,6 +209,10 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
   }
 }
 
+export async function refreshPairData(pair: TokenPair): Promise<TokenPair> {
+  return hydratePair(pair);
+}
+
 async function hydratePair(pair: TokenPair): Promise<TokenPair> {
   const needsHydration = !pair.liquidity?.usd || !pair.volume?.m5 || !pair.fdv;
   if (!needsHydration) {
