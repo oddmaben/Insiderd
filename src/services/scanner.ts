@@ -48,6 +48,10 @@ interface DexScreenerPairResponse {
   pairs?: TokenPair[];
 }
 
+interface DexScreenerTokenResponse {
+  pairs?: TokenPair[];
+}
+
 interface CacheEntry {
   timestamp: number;
   pairCreatedAt: number;
@@ -56,7 +60,8 @@ interface CacheEntry {
 const CACHE_FILE = path.join(process.cwd(), 'data', 'seen_pairs.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
-const SEARCH_TERMS_PER_SCAN = 8;
+const SEARCH_TERMS_PER_SCAN = 4;
+const SEARCH_REQUEST_DELAY_MS = 350;
 const SEARCH_TERMS = [
   'pumpfun',
   'mayhem',
@@ -129,27 +134,29 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
     const allPairs: TokenPair[] = [];
     const termsForThisScan = getSearchTermsForScan();
 
-    const searchPromises = termsForThisScan.map(async (term) => {
+    for (let i = 0; i < termsForThisScan.length; i++) {
+      const term = termsForThisScan[i];
+
       try {
         const url = `${config.api.dexscreener}/search?q=${encodeURIComponent(term)}`;
         const data = await fetchWithRetry<DexScreenerResponse>(url, {
-          timeout: 8000,
+          timeout: 12000,
           retries: 2
         });
 
-        if (data?.pairs) {
-          return data.pairs.filter(p => 
-            p.chainId?.toLowerCase() === 'solana'
+        if (data?.pairs?.length) {
+          allPairs.push(
+            ...data.pairs.filter(p => p.chainId?.toLowerCase() === 'solana')
           );
         }
       } catch (error) {
         logger.warn(`Search term "${term}" failed:`, error);
       }
-      return [];
-    });
 
-    const searchResults = await Promise.all(searchPromises);
-    searchResults.forEach(pairs => allPairs.push(...pairs));
+      if (i < termsForThisScan.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, SEARCH_REQUEST_DELAY_MS));
+      }
+    }
 
     if (allPairs.length === 0) {
       logger.warn('No pairs returned from DexScreener');
@@ -227,11 +234,19 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
       skipCircuitBreaker: true
     });
 
-    const hydrated = data?.pairs?.[0] || data?.pair;
-    if (hydrated) {
+    const hydrated = pickBestHydrationPair(pair, data?.pairs || (data?.pair ? [data.pair] : []));
+    if (hydrated && hasUsefulHydration(hydrated)) {
       return {
         ...pair,
         ...hydrated
+      };
+    }
+
+    const fallback = await hydrateFromTokenEndpoint(pair);
+    if (fallback) {
+      return {
+        ...pair,
+        ...fallback
       };
     }
   } catch (error) {
@@ -239,6 +254,66 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
   }
 
   return pair;
+}
+
+async function hydrateFromTokenEndpoint(pair: TokenPair): Promise<TokenPair | null> {
+  if (!pair.baseToken?.address) {
+    return null;
+  }
+
+  try {
+    const url = `${config.api.dexscreener}/tokens/${encodeURIComponent(pair.baseToken.address)}`;
+    const data = await fetchWithRetry<DexScreenerTokenResponse>(url, {
+      timeout: 9000,
+      retries: 2,
+      skipCircuitBreaker: true
+    });
+
+    const hydrated = pickBestHydrationPair(pair, data?.pairs || []);
+    if (!hydrated || !hasUsefulHydration(hydrated)) {
+      return null;
+    }
+
+    logger.debug(`Token endpoint hydration succeeded for ${pair.baseToken.symbol}`);
+    return hydrated;
+  } catch {
+    return null;
+  }
+}
+
+function pickBestHydrationPair(sourcePair: TokenPair, candidates: TokenPair[]): TokenPair | null {
+  if (!candidates.length) {
+    return null;
+  }
+
+  const chainId = sourcePair.chainId?.toLowerCase();
+  const sourcePairAddress = sourcePair.pairAddress?.toLowerCase();
+  const sourceDex = sourcePair.dexId?.toLowerCase();
+  const sourceQuoteAddress = sourcePair.quoteToken?.address?.toLowerCase();
+
+  const sameChain = candidates.filter(p => p.chainId?.toLowerCase() === chainId);
+  const pool = sameChain.length ? sameChain : candidates;
+
+  const exactPair = pool.find(p => p.pairAddress?.toLowerCase() === sourcePairAddress);
+  if (exactPair) {
+    return exactPair;
+  }
+
+  const sameDexAndQuote = pool.find(p =>
+    p.dexId?.toLowerCase() === sourceDex &&
+    p.quoteToken?.address?.toLowerCase() === sourceQuoteAddress
+  );
+  if (sameDexAndQuote) {
+    return sameDexAndQuote;
+  }
+
+  return pool
+    .slice()
+    .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0] || null;
+}
+
+function hasUsefulHydration(pair: TokenPair): boolean {
+  return Boolean(pair.liquidity?.usd || pair.volume?.m5 || pair.fdv);
 }
 
 function getSearchTermsForScan(): string[] {

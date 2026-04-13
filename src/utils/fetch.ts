@@ -17,9 +17,9 @@ class CircuitBreaker {
   private successCount = 0;
   private lastFailureTime = 0;
   
-  private readonly failureThreshold = 5;
+  private readonly failureThreshold = 7;
   private readonly successThreshold = 2;
-  private readonly timeout = 60000;
+  private readonly timeout = 30000;
 
   recordSuccess(): void {
     this.failureCount = 0;
