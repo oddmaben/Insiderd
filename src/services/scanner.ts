@@ -4,7 +4,6 @@ import { fetchWithRetry } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { isLiquidityLocked } from './liquidityCheck.js';
-import { checkRugStatus } from './rugcheck.js';
 import { getBirdeyeLiquidityUsd, clearBirdeyeCache } from './birdeye.js';
 
 export interface TokenPair {
@@ -209,11 +208,6 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
 
       const isLocked = await isLiquidityLocked(p);
       if (!isLocked) continue;
-
-      if (config.security.enableRugcheck) {
-        const isSafe = await checkRugStatus(p);
-        if (!isSafe) continue;
-      }
 
       if (!hasPositiveLiquidity(p)) {
         queuePendingLiquidityPair(p, now);
