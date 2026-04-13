@@ -64,7 +64,6 @@ const SEARCH_TERMS_PER_SCAN = 4;
 const SEARCH_REQUEST_DELAY_MS = 350;
 const SEARCH_TERMS = [
   'pumpfun',
-  'mayhem',
   'bonk',
   'bonkers',
   'bags',
@@ -235,19 +234,21 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
     });
 
     const hydrated = pickBestHydrationPair(pair, data?.pairs || (data?.pair ? [data.pair] : []));
-    if (hydrated && hasUsefulHydration(hydrated)) {
-      return {
-        ...pair,
-        ...hydrated
-      };
+    const mergedFromPairEndpoint = hydrated ? { ...pair, ...hydrated } : null;
+    if (mergedFromPairEndpoint && (mergedFromPairEndpoint.liquidity?.usd || 0) > 0) {
+      return mergedFromPairEndpoint;
     }
 
     const fallback = await hydrateFromTokenEndpoint(pair);
     if (fallback) {
       return {
-        ...pair,
+        ...(mergedFromPairEndpoint || pair),
         ...fallback
       };
+    }
+
+    if (mergedFromPairEndpoint) {
+      return mergedFromPairEndpoint;
     }
   } catch (error) {
     logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
@@ -270,7 +271,7 @@ async function hydrateFromTokenEndpoint(pair: TokenPair): Promise<TokenPair | nu
     });
 
     const hydrated = pickBestHydrationPair(pair, data?.pairs || []);
-    if (!hydrated || !hasUsefulHydration(hydrated)) {
+    if (!hydrated || !hasPositiveLiquidity(hydrated)) {
       return null;
     }
 
@@ -293,9 +294,12 @@ function pickBestHydrationPair(sourcePair: TokenPair, candidates: TokenPair[]): 
 
   const sameChain = candidates.filter(p => p.chainId?.toLowerCase() === chainId);
   const pool = sameChain.length ? sameChain : candidates;
+  const highestLiquidityPair = pool
+    .slice()
+    .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0] || null;
 
   const exactPair = pool.find(p => p.pairAddress?.toLowerCase() === sourcePairAddress);
-  if (exactPair) {
+  if (exactPair && (hasPositiveLiquidity(exactPair) || !hasPositiveLiquidity(highestLiquidityPair))) {
     return exactPair;
   }
 
@@ -303,17 +307,15 @@ function pickBestHydrationPair(sourcePair: TokenPair, candidates: TokenPair[]): 
     p.dexId?.toLowerCase() === sourceDex &&
     p.quoteToken?.address?.toLowerCase() === sourceQuoteAddress
   );
-  if (sameDexAndQuote) {
+  if (sameDexAndQuote && (hasPositiveLiquidity(sameDexAndQuote) || !hasPositiveLiquidity(highestLiquidityPair))) {
     return sameDexAndQuote;
   }
 
-  return pool
-    .slice()
-    .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0] || null;
+  return highestLiquidityPair;
 }
 
-function hasUsefulHydration(pair: TokenPair): boolean {
-  return Boolean(pair.liquidity?.usd || pair.volume?.m5 || pair.fdv);
+function hasPositiveLiquidity(pair: TokenPair | null): boolean {
+  return (pair?.liquidity?.usd || 0) > 0;
 }
 
 function getSearchTermsForScan(): string[] {

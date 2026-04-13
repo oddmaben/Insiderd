@@ -10,10 +10,17 @@ let scanCount = 0;
 let tokensFound = 0;
 let tokensPassed = 0;
 let lastHealthCheck = Date.now();
+let isScanRunning = false;
 const LIQUIDITY_RECHECK_ATTEMPTS = 2;
 const LIQUIDITY_RECHECK_DELAY_MS = 1200;
 
 async function scanLoop(): Promise<void> {
+  if (isScanRunning) {
+    logger.debug('Previous scan still running, skipping this tick');
+    return;
+  }
+
+  isScanRunning = true;
   try {
     scanCount++;
     logger.info(`\n━━━ Scan #${scanCount} ━━━`);
@@ -66,6 +73,8 @@ async function scanLoop(): Promise<void> {
 
   } catch (error: any) {
     logger.error('Error in scan loop:', error.message);
+  } finally {
+    isScanRunning = false;
   }
 }
 

@@ -6,6 +6,8 @@ import { sleep } from '../utils/fetch.js';
 const RUGCHECK_API = 'https://api.rugcheck.xyz/v1/tokens';
 const RUGCHECK_MAX_ATTEMPTS = 3;
 const RETRYABLE_STATUS_CODES = new Set([400, 429, 500, 502, 503, 504]);
+const RUGCHECK_CACHE_TTL_MS = 2 * 60 * 1000;
+const rugcheckCache = new Map<string, { safe: boolean; expiresAt: number }>();
 
 interface RugCheckReport {
   score: number;
@@ -44,6 +46,14 @@ const BLOCKED_RISK_PATTERNS = [
 
 export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
   const mint = pair.baseToken.address;
+  const now = Date.now();
+  const cached = rugcheckCache.get(mint);
+  if (cached && cached.expiresAt > now) {
+    return cached.safe;
+  }
+  if (cached) {
+    rugcheckCache.delete(mint);
+  }
   
   try {
     const url = `${RUGCHECK_API}/${mint}/report/summary`;
@@ -59,7 +69,7 @@ export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
         if (!response.ok) {
           if (response.status === 404) {
             logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: Incomplete security data (RugCheck missing)`);
-            return false;
+            return cacheRugcheckResult(mint, false, 10 * 60 * 1000);
           }
 
           const shouldRetry = RETRYABLE_STATUS_CODES.has(response.status) && attempt < RUGCHECK_MAX_ATTEMPTS;
@@ -72,11 +82,11 @@ export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
 
           if (response.status === 400) {
             logger.warn(`⚠️ ${pair.baseToken.symbol}: RugCheck returned 400 after retries, allowing with caution`);
-            return true;
+            return cacheRugcheckResult(mint, true, 2 * 60 * 1000);
           }
 
           logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: RugCheck unavailable (${response.status})`);
-          return false;
+          return cacheRugcheckResult(mint, false, 60 * 1000);
         }
 
         const data = await response.json() as RugCheckReport;
@@ -86,7 +96,7 @@ export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
           logger.warn(
             `❌ ${pair.baseToken.symbol} REJECTED: High RugCheck Score (${score} > ${config.security.maxRugcheckScore})`
           );
-          return false;
+          return cacheRugcheckResult(mint, false, 10 * 60 * 1000);
         }
         
         const risks = data.risks || [];
@@ -99,17 +109,17 @@ export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
         if (criticalRisks.length > 0) {
           const riskNames = criticalRisks.map((r) => r.name).join(', ');
           logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: Critical Risks (${riskNames})`);
-          return false;
+          return cacheRugcheckResult(mint, false, 10 * 60 * 1000);
         }
 
         if (blockedRisks.length > 0) {
           const riskNames = blockedRisks.map((r) => r.name).join(', ');
           logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: Blocklisted Risks (${riskNames})`);
-          return false;
+          return cacheRugcheckResult(mint, false, 10 * 60 * 1000);
         }
 
         logger.debug(`✅ ${pair.baseToken.symbol}: RugCheck Passed (Score: ${score})`);
-        return true;
+        return cacheRugcheckResult(mint, true, RUGCHECK_CACHE_TTL_MS);
       } catch (error) {
         if (attempt < RUGCHECK_MAX_ATTEMPTS) {
           const delay = 500 * attempt;
@@ -118,14 +128,22 @@ export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
           continue;
         }
         logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: RugCheck API failed`);
-        return false;
+        return cacheRugcheckResult(mint, false, 60 * 1000);
       }
     }
 
     logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: RugCheck exhausted retries`);
-    return false;
+    return cacheRugcheckResult(mint, false, 60 * 1000);
   } catch {
     logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: RugCheck setup failed`);
-    return false;
+    return cacheRugcheckResult(mint, false, 60 * 1000);
   }
+}
+
+function cacheRugcheckResult(mint: string, safe: boolean, ttlMs: number): boolean {
+  rugcheckCache.set(mint, {
+    safe,
+    expiresAt: Date.now() + ttlMs
+  });
+  return safe;
 }
