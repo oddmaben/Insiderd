@@ -20,6 +20,7 @@ const REQUEST_TIMEOUT_MS = 9000;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const liquidityCache = new Map<string, { value: number; expiresAt: number }>();
 const execFileAsync = promisify(execFile);
+let authWarningShown = false;
 
 export async function getBirdeyeLiquidityUsd(tokenMint: string): Promise<number | null> {
   const now = Date.now();
@@ -94,8 +95,11 @@ async function fetchBirdeyeOverview(
         }
 
         if ((response.status === 401 || response.status === 403) && attempt === 1) {
-          logger.warn(`[BIRDEYE] Authorization failed (${response.status}). Check API key/plan.`);
-          return null;
+          if (!authWarningShown) {
+            logger.warn(`[BIRDEYE] Authorization failed (${response.status}) in fetch; trying curl fallback.`);
+            authWarningShown = true;
+          }
+          return fetchBirdeyeOverviewWithCurl(url, headers);
         }
 
         if (RETRYABLE_STATUSES.has(response.status) && attempt < 2) {
