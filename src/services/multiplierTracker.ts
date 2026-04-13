@@ -2,7 +2,7 @@ import { fetchWithRetry, sleep } from '../utils/fetch.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
-import { sendRawMessage } from './telegram.js';
+import { sendRawCallMessage } from './telegram.js';
 
 interface DexScreenerPair {
   priceUsd?: string;
@@ -13,15 +13,22 @@ interface DexScreenerResponse {
   pair?: DexScreenerPair;
 }
 
-const TARGET_MULTIPLIERS = [1.5, 2, 2.5, 3, 5, 7, 9, 10, 12, 15, 20];
+const TARGET_MULTIPLIERS = [1.5, 2, 3, 5, 10, 20];
 
 interface TrackingState {
   baseMc: number;
   remainingTargets: number[];
   startedAt: number;
+  photoUrl?: string;
+  lastMessageId?: number;
 }
 
 const activeTrackers = new Map<string, TrackingState>();
+
+interface StartTrackingOptions {
+  initialMessageId?: number;
+  photoUrl?: string;
+}
 
 function parseMarketCap(pair: TokenPair): number {
   if (pair.fdv && pair.fdv > 0) {
@@ -32,7 +39,7 @@ function parseMarketCap(pair: TokenPair): number {
   return liquidity * 10;
 }
 
-export function startMultiplierTracking(pair: TokenPair): void {
+export function startMultiplierTracking(pair: TokenPair, options: StartTrackingOptions = {}): void {
   const address = pair.baseToken.address;
 
   if (activeTrackers.has(address)) {
@@ -49,7 +56,9 @@ export function startMultiplierTracking(pair: TokenPair): void {
   const state: TrackingState = {
     baseMc,
     remainingTargets: [...TARGET_MULTIPLIERS],
-    startedAt: Date.now()
+    startedAt: Date.now(),
+    photoUrl: options.photoUrl,
+    lastMessageId: options.initialMessageId
   };
 
   activeTrackers.set(address, state);
@@ -103,7 +112,13 @@ async function trackLoop(pair: TokenPair, state: TrackingState): Promise<void> {
         if (newlyHit.length > 0) {
           const highest = Math.max(...newlyHit);
           const msg = formatMultiplierMessage(symbol, state.baseMc, currentMc, highest);
-          await sendRawMessage(msg);
+          const newMessageId = await sendRawCallMessage(msg, {
+            photoUrl: state.photoUrl,
+            replyToMessageId: state.lastMessageId
+          });
+          if (newMessageId) {
+            state.lastMessageId = newMessageId;
+          }
           logger.success(`[MULTIPLIER] Sent ${highest}x alert for ${symbol}`);
         }
 
@@ -145,6 +160,7 @@ function formatMultiplierMessage(
   let msg = '';
   msg += `💸 $${symbol} ${hitMultiple.toFixed(1)}x | ${proMultiple}x with PRO ⚡️\n`;
   msg += `📈 ${baseStr} → ${currentStr}\n`;
+  msg += `PM @DCKXE for Insider access.`;
 
   return msg;
 }

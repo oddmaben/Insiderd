@@ -5,6 +5,8 @@ interface TelegramConfig {
   botToken: string;
   channelId: string;
   sendStartupMessage: boolean;
+  logChatId: string;
+  enableLogForwarding: boolean;
 }
 
 interface ScannerConfig {
@@ -55,16 +57,18 @@ export const config: Config = {
   telegram: {
     botToken: getEnvString('TELEGRAM_BOT_TOKEN'),
     channelId: getEnvString('TELEGRAM_CHANNEL_ID'),
-    sendStartupMessage: process.env.SEND_STARTUP_MESSAGE === 'true'
+    sendStartupMessage: process.env.SEND_STARTUP_MESSAGE === 'true',
+    logChatId: getEnvString('TELEGRAM_LOG_CHAT_ID', '@DCKXE'),
+    enableLogForwarding: process.env.ENABLE_TELEGRAM_LOG_FORWARDING !== 'false'
   },
   
   scanner: {
-    pollInterval: getEnvNumber('POLL_INTERVAL', 3000),
-    minLiquidity: getEnvNumber('MIN_LIQUIDITY', 300),
-    minVolume5m: getEnvNumber('MIN_VOLUME', 2000),
-    maxAgeMinutes: getEnvNumber('MAX_AGE', 10),
-    minMarketCap: getEnvNumber('MIN_MARKET_CAP', 10000),
-    maxMarketCap: getEnvNumber('MAX_MARKET_CAP', 500000)
+    pollInterval: getEnvNumber('POLL_INTERVAL', 2500),
+    minLiquidity: getEnvNumber('MIN_LIQUIDITY', 800),
+    minVolume5m: getEnvNumber('MIN_VOLUME', 5000),
+    maxAgeMinutes: getEnvNumber('MAX_AGE', 7),
+    minMarketCap: getEnvNumber('MIN_MARKET_CAP', 15000),
+    maxMarketCap: getEnvNumber('MAX_MARKET_CAP', 300000)
   },
   
   api: {

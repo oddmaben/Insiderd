@@ -34,6 +34,9 @@ export interface TokenPair {
   };
   pairCreatedAt?: number;
   url: string;
+  info?: {
+    imageUrl?: string;
+  };
 }
 
 interface DexScreenerResponse {

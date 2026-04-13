@@ -2,6 +2,8 @@ interface TelegramConfig {
     botToken: string;
     channelId: string;
     sendStartupMessage: boolean;
+    logChatId: string;
+    enableLogForwarding: boolean;
 }
 interface ScannerConfig {
     pollInterval: number;

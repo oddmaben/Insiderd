@@ -1,2 +1,7 @@
 import { TokenPair } from './scanner.js';
-export declare function startMultiplierTracking(pair: TokenPair): void;
+interface StartTrackingOptions {
+    initialMessageId?: number;
+    photoUrl?: string;
+}
+export declare function startMultiplierTracking(pair: TokenPair, options?: StartTrackingOptions): void;
+export {};

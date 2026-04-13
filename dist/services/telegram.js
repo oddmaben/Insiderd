@@ -20,6 +20,12 @@ async function rateLimitWait() {
     }
     lastMessageTime = Date.now();
 }
+function getDexscreenerImageUrl(pair) {
+    if (pair.info?.imageUrl) {
+        return pair.info.imageUrl;
+    }
+    return `https://dd.dexscreener.com/ds-data/tokens/solana/${pair.baseToken.address}.png`;
+}
 function splitMessage(message) {
     const MAX_LENGTH = 4000;
     if (message.length <= MAX_LENGTH) {
@@ -60,6 +66,43 @@ export async function sendWithRetry(message, attempt = 1) {
         logger.warn(`[TELEGRAM] Retry ${attempt}/3...`);
         await new Promise(r => setTimeout(r, 1000 * attempt));
         return sendWithRetry(message, attempt + 1);
+    }
+}
+async function sendCallWithRetry(message, options = {}, attempt = 1) {
+    try {
+        const payloadBase = {
+            parse_mode: 'HTML',
+            link_preview_options: {
+                is_disabled: true
+            },
+            ...(options.replyToMessageId ? { reply_to_message_id: options.replyToMessageId } : {})
+        };
+        if (options.photoUrl) {
+            const sent = await bot.telegram.sendPhoto(config.telegram.channelId, options.photoUrl, {
+                caption: message.slice(0, 1024),
+                parse_mode: 'HTML',
+                ...(options.replyToMessageId ? { reply_to_message_id: options.replyToMessageId } : {})
+            });
+            return sent.message_id;
+        }
+        const sent = await bot.telegram.sendMessage(config.telegram.channelId, message, payloadBase);
+        return sent.message_id;
+    }
+    catch (error) {
+        if (options.photoUrl) {
+            logger.warn('[TELEGRAM] Photo send failed, retrying as text message');
+            return sendCallWithRetry(message, {
+                ...options,
+                photoUrl: undefined
+            }, attempt + 1);
+        }
+        if (attempt >= 3) {
+            logger.error(`[TELEGRAM] Call send failed after 3 attempts:`, error.message);
+            return null;
+        }
+        logger.warn(`[TELEGRAM] Call send retry ${attempt}/3...`);
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+        return sendCallWithRetry(message, options, attempt + 1);
     }
 }
 export async function initBot() {
@@ -107,19 +150,18 @@ export async function sendAlert(pair, filterResult) {
     }
     try {
         const message = formatMessage(pair, filterResult);
-        const parts = splitMessage(message);
-        logger.info(`[TELEGRAM] Sending ${parts.length} message part(s)...`);
-        for (let i = 0; i < parts.length; i++) {
-            await rateLimitWait();
-            const sent = await sendWithRetry(parts[i]);
-            if (!sent) {
-                logger.error(`Failed to send part ${i + 1}/${parts.length}`);
-                return false;
-            }
-            logger.info(`Sent part ${i + 1}/${parts.length}`);
+        const photoUrl = getDexscreenerImageUrl(pair);
+        await rateLimitWait();
+        const messageId = await sendCallWithRetry(message, { photoUrl });
+        if (!messageId) {
+            logger.error(`Failed to send alert for ${pair.baseToken.symbol}`);
+            return false;
         }
         logger.success(`📤 Alert sent: ${pair.baseToken.symbol}`);
-        startMultiplierTracking(pair);
+        startMultiplierTracking(pair, {
+            initialMessageId: messageId,
+            photoUrl
+        });
         reconnectAttempts = 0;
         return true;
     }
@@ -161,32 +203,29 @@ function formatMessage(pair, filterResult) {
     msg += `├🧬 Dev wallet, smart money tracking\n`;
     msg += `├👤 Community, holders, 𝕏 insights\n`;
     msg += `└⚡️Activate auto buy trading bots\n`;
-    msg += `\n${pair.url}`;
+    msg += `\n${pair.url}\n`;
+    msg += `\nPM @DCKXE for Insider access.`;
     return msg;
 }
 export async function sendRawMessage(message) {
+    const messageId = await sendRawCallMessage(message);
+    return messageId !== null;
+}
+export async function sendRawCallMessage(message, options = {}) {
     if (!isReady) {
         const reconnected = await initBot();
         if (!reconnected) {
             logger.error('Failed to (re)initialize bot for raw message');
-            return false;
+            return null;
         }
     }
     try {
-        const parts = splitMessage(message);
-        for (let i = 0; i < parts.length; i++) {
-            await rateLimitWait();
-            const sent = await sendWithRetry(parts[i]);
-            if (!sent) {
-                logger.error(`Failed to send raw part ${i + 1}/${parts.length}`);
-                return false;
-            }
-        }
-        return true;
+        await rateLimitWait();
+        return await sendCallWithRetry(message, options);
     }
     catch (error) {
         logger.error('Error sending raw message:', error.message);
-        return false;
+        return null;
     }
 }
 export async function sendStartup() {
@@ -197,9 +236,8 @@ export async function sendStartup() {
         return;
     }
     try {
-        const msg = `🤖 <b>Meme Coin Scanner v3.0 Started</b>\n\n` +
-            `✅ Production mode active\n` +
-            `✅ All protections enabled\n\n` +
+        const msg = `✅ <b>Insider Dinero Updated</b>\n\n` +
+            `New bot update has been deployed and is now live.\n\n` +
             `<b>Filter Settings:</b>\n` +
             `Min Liquidity: ${formatCurrency(config.scanner.minLiquidity)}\n` +
             `Min Volume (5m): ${formatCurrency(config.scanner.minVolume5m)}\n` +

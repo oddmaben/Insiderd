@@ -51,7 +51,7 @@ export function filterToken(pair) {
     const fdv = pair.fdv || 0;
     if (fdv > 0 && liquidity > 0) {
         const ratio = fdv / liquidity;
-        if (ratio > 1000) {
+        if (ratio > 500) {
             logger.warn(`❌ ${symbol} REJECTED: Suspicious FDV/Liquidity ratio (${ratio.toFixed(0)}x)`);
             return {
                 passed: false,
@@ -61,7 +61,7 @@ export function filterToken(pair) {
             };
         }
     }
-    if (priceChange > 300 && volume5m < 1000) {
+    if (priceChange > 250 && volume5m < 2000) {
         logger.warn(`❌ ${symbol} REJECTED: Honeypot pattern (High pump, low volume)`);
         return {
             passed: false,

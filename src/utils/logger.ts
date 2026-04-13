@@ -39,30 +39,104 @@ function writeToFile(level: string, message: string, data?: any): void {
   }
 }
 
+const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const TELEGRAM_SEND_INTERVAL_MS = 1200;
+const TELEGRAM_BATCH_SIZE = 6;
+const TELEGRAM_MAX_QUEUE = 400;
+
+const telegramLogQueue: string[] = [];
+let telegramSending = false;
+let telegramLastSentAt = 0;
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function compactWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function enqueueTelegramLog(level: string, message: string): void {
+  if (!config.telegram.enableLogForwarding) return;
+  if (!config.telegram.botToken || !config.telegram.logChatId) return;
+
+  const cleaned = compactWhitespace(stripAnsi(message));
+  if (!cleaned) return;
+
+  telegramLogQueue.push(`[${level}] ${cleaned}`);
+
+  if (telegramLogQueue.length > TELEGRAM_MAX_QUEUE) {
+    telegramLogQueue.splice(0, telegramLogQueue.length - TELEGRAM_MAX_QUEUE);
+  }
+
+  void flushTelegramLogQueue();
+}
+
+async function flushTelegramLogQueue(): Promise<void> {
+  if (telegramSending) return;
+  telegramSending = true;
+
+  try {
+    while (telegramLogQueue.length > 0) {
+      const now = Date.now();
+      const timeSinceLast = now - telegramLastSentAt;
+      if (timeSinceLast < TELEGRAM_SEND_INTERVAL_MS) {
+        await new Promise(resolve => setTimeout(resolve, TELEGRAM_SEND_INTERVAL_MS - timeSinceLast));
+      }
+
+      const lines = telegramLogQueue.splice(0, TELEGRAM_BATCH_SIZE);
+      const text = `🛰 Insiderd Logs\n${lines.join('\n')}`;
+
+      await fetch(`${TELEGRAM_API_BASE}/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          chat_id: config.telegram.logChatId,
+          text,
+          disable_web_page_preview: true
+        })
+      });
+
+      telegramLastSentAt = Date.now();
+    }
+  } catch (error) {
+    console.error('[LOGGER] Telegram log forwarding failed:', error);
+  } finally {
+    telegramSending = false;
+  }
+}
+
 export const logger = {
   info: (msg: string, data?: any) => {
     console.log(`${colors.gray}[${timestamp()}]${colors.reset} ${colors.blue}INFO${colors.reset}    ${msg}`);
     
     writeToFile('INFO', msg, data);
+    enqueueTelegramLog('INFO', msg);
   },
   
   success: (msg: string, data?: any) => {
     console.log(`${colors.gray}[${timestamp()}]${colors.reset} ${colors.green}SUCCESS${colors.reset} ${msg}`);
     writeToFile('SUCCESS', msg, data);
+    enqueueTelegramLog('SUCCESS', msg);
   },
   
   debug: (msg: string, data?: any) => {
     writeToFile('DEBUG', msg, data);
+    enqueueTelegramLog('DEBUG', msg);
   },
   
   warn: (msg: string, data?: any) => {
     console.log(`${colors.gray}[${timestamp()}]${colors.reset} ${colors.yellow}WARN${colors.reset}    ${msg}`);
     writeToFile('WARN', msg, data);
+    enqueueTelegramLog('WARN', msg);
   },
   
   error: (msg: string, data?: any) => {
     console.log(`${colors.gray}[${timestamp()}]${colors.reset} ${colors.red}ERROR${colors.reset}   ${msg}`);
     writeToFile('ERROR', msg, data);
+    enqueueTelegramLog('ERROR', msg);
     
     if (data instanceof Error) {
       console.error(data.stack);

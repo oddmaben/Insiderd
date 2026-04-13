@@ -26,6 +26,9 @@ export interface TokenPair {
     };
     pairCreatedAt?: number;
     url: string;
+    info?: {
+        imageUrl?: string;
+    };
 }
 export declare function fetchNewPairs(): Promise<TokenPair[]>;
 export declare function getAgeMinutes(createdAt: number): number;
