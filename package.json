@@ -1,0 +1,36 @@
+{
+  "name": "meme-coins-signal",
+  "version": "1.0.0",
+  "description": "Stable 24/7 Solana Meme Coin Scanner with Anti-Crash Protection",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:prod": "NODE_ENV=production node dist/index.js",
+    "dev": "node --loader ts-node/esm src/index.ts",
+    "clean": "rm -rf dist",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop meme-scanner",
+    "pm2:restart": "pm2 restart meme-scanner",
+    "pm2:logs": "pm2 logs meme-scanner"
+  },
+  "keywords": [
+    "solana",
+    "meme-coin",
+    "crypto",
+    "scanner",
+    "telegram"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "telegraf": "^4.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
