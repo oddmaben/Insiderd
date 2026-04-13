@@ -43,6 +43,11 @@ interface DexScreenerResponse {
   pairs: TokenPair[];
 }
 
+interface DexScreenerPairResponse {
+  pair?: TokenPair;
+  pairs?: TokenPair[];
+}
+
 interface CacheEntry {
   timestamp: number;
   pairCreatedAt: number;
@@ -159,26 +164,23 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
     const now = Date.now();
     const maxAge = config.scanner.maxAgeMinutes * 60 * 1000;
     
-    const asyncFilter = async (arr: TokenPair[], predicate: (p: TokenPair) => Promise<boolean>) => {
-      const results = await Promise.all(arr.map(predicate));
-      return arr.filter((_v, index) => results[index]);
-    };
+    const newPairs: TokenPair[] = [];
+    for (const rawPair of unseenPairs) {
+      const p = await hydratePair(rawPair);
 
-    const newPairs = await asyncFilter(unseenPairs, async (p) => {
-      if (!p.pairCreatedAt) return false;
-      
+      if (!p.pairCreatedAt) continue;
+
       const age = now - p.pairCreatedAt;
-      
-      if (age > maxAge) return false;
+      if (age > maxAge) continue;
 
       const isLocked = await isLiquidityLocked(p);
-      if (!isLocked) return false;
+      if (!isLocked) continue;
 
       const isSafe = await checkRugStatus(p);
-      if (!isSafe) return false;
+      if (!isSafe) continue;
 
-      return true;
-    });
+      newPairs.push(p);
+    }
 
     newPairs.forEach(p => {
       seenPairs.set(p.pairAddress, {
@@ -202,6 +204,33 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
     logger.error('Critical error in fetchNewPairs:', error);
     return [];
   }
+}
+
+async function hydratePair(pair: TokenPair): Promise<TokenPair> {
+  const needsHydration = !pair.liquidity?.usd || !pair.volume?.m5 || !pair.fdv;
+  if (!needsHydration) {
+    return pair;
+  }
+
+  try {
+    const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
+    const data = await fetchWithRetry<DexScreenerPairResponse>(url, {
+      timeout: 8000,
+      retries: 2
+    });
+
+    const hydrated = data?.pairs?.[0] || data?.pair;
+    if (hydrated) {
+      return {
+        ...pair,
+        ...hydrated
+      };
+    }
+  } catch (error) {
+    logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
+  }
+
+  return pair;
 }
 
 function cleanOldCache(): void {

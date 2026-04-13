@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
+import { config } from '../config.js';
 
 const RUGCHECK_API = 'https://api.rugcheck.xyz/v1/tokens';
 
@@ -64,8 +65,10 @@ export async function checkRugStatus(pair: TokenPair): Promise<boolean> {
     
     const score = data.score || 0;
     
-    if (score > 1500) {
-      logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: High RugCheck Score (${score})`);
+    if (score > config.security.maxRugcheckScore) {
+      logger.warn(
+        `❌ ${pair.baseToken.symbol} REJECTED: High RugCheck Score (${score} > ${config.security.maxRugcheckScore})`
+      );
       return false;
     }
     

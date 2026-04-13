@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { config } from '../config.js';
 const RUGCHECK_API = 'https://api.rugcheck.xyz/v1/tokens';
 const BLOCKED_RISK_PATTERNS = [
     'incomplete security data',
@@ -40,8 +41,8 @@ export async function checkRugStatus(pair) {
         }
         const data = await response.json();
         const score = data.score || 0;
-        if (score > 1500) {
-            logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: High RugCheck Score (${score})`);
+        if (score > config.security.maxRugcheckScore) {
+            logger.warn(`❌ ${pair.baseToken.symbol} REJECTED: High RugCheck Score (${score} > ${config.security.maxRugcheckScore})`);
             return false;
         }
         const risks = data.risks || [];

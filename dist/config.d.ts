@@ -19,10 +19,14 @@ interface ApiConfig {
     solscan: string;
     rpcUrl: string;
 }
+interface SecurityConfig {
+    maxRugcheckScore: number;
+}
 export interface Config {
     telegram: TelegramConfig;
     scanner: ScannerConfig;
     api: ApiConfig;
+    security: SecurityConfig;
     enableLogs: boolean;
 }
 export declare const config: Config;

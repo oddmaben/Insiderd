@@ -100,24 +100,22 @@ export async function fetchNewPairs() {
         const unseenPairs = uniquePairs.filter(p => !seenPairs.has(p.pairAddress));
         const now = Date.now();
         const maxAge = config.scanner.maxAgeMinutes * 60 * 1000;
-        const asyncFilter = async (arr, predicate) => {
-            const results = await Promise.all(arr.map(predicate));
-            return arr.filter((_v, index) => results[index]);
-        };
-        const newPairs = await asyncFilter(unseenPairs, async (p) => {
+        const newPairs = [];
+        for (const rawPair of unseenPairs) {
+            const p = await hydratePair(rawPair);
             if (!p.pairCreatedAt)
-                return false;
+                continue;
             const age = now - p.pairCreatedAt;
             if (age > maxAge)
-                return false;
+                continue;
             const isLocked = await isLiquidityLocked(p);
             if (!isLocked)
-                return false;
+                continue;
             const isSafe = await checkRugStatus(p);
             if (!isSafe)
-                return false;
-            return true;
-        });
+                continue;
+            newPairs.push(p);
+        }
         newPairs.forEach(p => {
             seenPairs.set(p.pairAddress, {
                 timestamp: Date.now(),
@@ -138,6 +136,30 @@ export async function fetchNewPairs() {
         logger.error('Critical error in fetchNewPairs:', error);
         return [];
     }
+}
+async function hydratePair(pair) {
+    const needsHydration = !pair.liquidity?.usd || !pair.volume?.m5 || !pair.fdv;
+    if (!needsHydration) {
+        return pair;
+    }
+    try {
+        const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
+        const data = await fetchWithRetry(url, {
+            timeout: 8000,
+            retries: 2
+        });
+        const hydrated = data?.pairs?.[0] || data?.pair;
+        if (hydrated) {
+            return {
+                ...pair,
+                ...hydrated
+            };
+        }
+    }
+    catch (error) {
+        logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
+    }
+    return pair;
 }
 function cleanOldCache() {
     const now = Date.now();

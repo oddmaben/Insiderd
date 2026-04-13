@@ -25,10 +25,15 @@ interface ApiConfig {
   rpcUrl: string;
 }
 
+interface SecurityConfig {
+  maxRugcheckScore: number;
+}
+
 export interface Config {
   telegram: TelegramConfig;
   scanner: ScannerConfig;
   api: ApiConfig;
+  security: SecurityConfig;
   enableLogs: boolean;
 }
 
@@ -77,6 +82,10 @@ export const config: Config = {
     solscan: 'https://api.solscan.io',
     rpcUrl: getEnvString('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com')
   },
+
+  security: {
+    maxRugcheckScore: getEnvNumber('MAX_RUGCHECK_SCORE', 1200)
+  },
   
   enableLogs: process.env.ENABLE_LOGS !== 'false'
 };
@@ -91,3 +100,4 @@ console.log(`[CONFIG] Poll interval: ${config.scanner.pollInterval}ms`);
 console.log(`[CONFIG] Min liquidity: $${config.scanner.minLiquidity}`);
 console.log(`[CONFIG] Min volume (5m): $${config.scanner.minVolume5m}`);
 console.log(`[CONFIG] Market cap range: $${config.scanner.minMarketCap} - $${config.scanner.maxMarketCap}`);
+console.log(`[CONFIG] Max RugCheck score: ${config.security.maxRugcheckScore}`);
