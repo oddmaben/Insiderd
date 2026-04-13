@@ -152,6 +152,7 @@ export async function fetchWithRetry<T>(
 
   const safeUrl = sanitizeUrl(url);
   const parsedUrl = new URL(safeUrl);
+  const isDexscreenerHost = parsedUrl.hostname.includes('dexscreener.com');
 
   return requestQueue.add(async () => {
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -166,8 +167,10 @@ export async function fetchWithRetry<T>(
           headers: {
             'User-Agent': 'MemeScanner/3.0',
             'Accept': 'application/json',
-            'Origin': 'https://dexscreener.com',
-            'Referer': 'https://dexscreener.com/',
+            ...(isDexscreenerHost ? {
+              'Origin': 'https://dexscreener.com',
+              'Referer': 'https://dexscreener.com/'
+            } : {}),
             ...headers
           }
         });

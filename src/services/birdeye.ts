@@ -25,9 +25,11 @@ export async function getBirdeyeLiquidityUsd(tokenMint: string): Promise<number 
     liquidityCache.delete(tokenMint);
   }
 
-  const url = `${config.api.birdeye}/token_overview?address=${encodeURIComponent(tokenMint)}`;
+  const birdeyeBase = config.api.birdeye.replace(/\/+$/, '');
+  const url = `${birdeyeBase}/defi/token_overview?address=${encodeURIComponent(tokenMint)}`;
   const headers: Record<string, string> = {
-    'Accept': 'application/json'
+    'Accept': 'application/json',
+    'x-chain': 'solana'
   };
 
   if (config.api.birdeyeApiKey) {

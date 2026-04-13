@@ -79,7 +79,7 @@ export const config: Config = {
   
   api: {
     dexscreener: 'https://api.dexscreener.com/latest/dex',
-    birdeye: 'https://public-api.birdeye.so/public',
+    birdeye: 'https://public-api.birdeye.so',
     birdeyeApiKey: process.env.BIRDEYE_API_KEY || undefined,
     solscan: 'https://api.solscan.io',
     rpcUrl: getEnvString('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com')
