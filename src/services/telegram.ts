@@ -256,7 +256,7 @@ function formatMessage(pair: TokenPair, filterResult: FilterResult): string {
   msg += `<b>✅ INSIDER PASS CALL</b>\n`;
   msg += `Insider Dinero\n`;
   msg += `${name}\n`;
-  msg += `${pair.baseToken.address}\n\n`;
+  msg += `<code>${pair.baseToken.address}</code>\n\n`;
 
   msg += `💰 Token Overview\n`;
   msg += `├ MC: ${mc} | ⏳ ${age}\n`;
@@ -296,10 +296,10 @@ function formatTokenEvaluationLog(pair: TokenPair, filterResult: FilterResult): 
 
 async function pinPassedAlert(messageId: number): Promise<void> {
   try {
-    await bot.telegram.pinChatMessage(config.telegram.channelId, messageId, {
+    await bot.telegram.pinChatMessage(config.telegram.logChatId, messageId, {
       disable_notification: true
     });
-    logger.success(`[TELEGRAM] Pinned passed alert (${messageId})`);
+    logger.success(`[TELEGRAM] Pinned passed alert in log chat (${messageId})`);
   } catch (error: any) {
     logger.warn(`[TELEGRAM] Could not pin alert (${messageId}): ${error?.message || error}`);
   }

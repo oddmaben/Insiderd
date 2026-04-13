@@ -20,7 +20,7 @@ interface TrackingState {
   remainingTargets: number[];
   startedAt: number;
   photoUrl?: string;
-  lastMessageId?: number;
+  threadRootMessageId?: number;
 }
 
 const activeTrackers = new Map<string, TrackingState>();
@@ -58,7 +58,7 @@ export function startMultiplierTracking(pair: TokenPair, options: StartTrackingO
     remainingTargets: [...TARGET_MULTIPLIERS],
     startedAt: Date.now(),
     photoUrl: options.photoUrl,
-    lastMessageId: options.initialMessageId
+    threadRootMessageId: options.initialMessageId
   };
 
   activeTrackers.set(address, state);
@@ -112,13 +112,10 @@ async function trackLoop(pair: TokenPair, state: TrackingState): Promise<void> {
         if (newlyHit.length > 0) {
           const highest = Math.max(...newlyHit);
           const msg = formatMultiplierMessage(symbol, state.baseMc, currentMc, highest);
-          const newMessageId = await sendRawCallMessage(msg, {
+          await sendRawCallMessage(msg, {
             photoUrl: state.photoUrl,
-            replyToMessageId: state.lastMessageId
+            replyToMessageId: state.threadRootMessageId
           });
-          if (newMessageId) {
-            state.lastMessageId = newMessageId;
-          }
           logger.success(`[MULTIPLIER] Sent ${highest}x alert for ${symbol}`);
         }
 
@@ -154,12 +151,15 @@ function formatMultiplierMessage(
 ): string {
   const baseStr = formatCurrencyShort(baseMc);
   const currentStr = formatCurrencyShort(currentMc);
+  const pctMove = ((currentMc / baseMc) - 1) * 100;
+  const pctLabel = `${pctMove >= 0 ? '+' : ''}${pctMove.toFixed(1)}%`;
 
   const proMultiple = (hitMultiple * 1.4).toFixed(1);
 
   let msg = '';
   msg += `💸 $${symbol} ${hitMultiple.toFixed(1)}x | ${proMultiple}x with PRO ⚡️\n`;
   msg += `📈 ${baseStr} → ${currentStr}\n`;
+  msg += `📊 Move since call: ${pctLabel}\n`;
   msg += `PM @DCKXE for Insider access.`;
 
   return msg;
