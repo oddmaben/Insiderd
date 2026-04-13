@@ -115,6 +115,7 @@ const circuitBreaker = new CircuitBreaker();
 const requestQueue = new RequestQueue();
 const hostLastRequestAt = new Map<string, number>();
 const HOST_MIN_INTERVAL_MS = 180;
+const MAX_RETRY_DELAY_MS = 12000;
 
 function addJitter(delay: number): number {
   const jitter = Math.random() * 0.3 * delay;
@@ -203,7 +204,8 @@ export async function fetchWithRetry<T>(
           return null;
         }
 
-        const delay = addJitter(retryDelayMs);
+        const boundedDelay = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
+        const delay = addJitter(boundedDelay);
         console.warn(`[FETCH] Retry ${attempt}/${retries} in ${Math.floor(delay)}ms...`);
         await sleep(delay);
       }
@@ -235,7 +237,7 @@ async function throttleHost(host: string): Promise<void> {
 function getRetryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
   if (error instanceof HttpError) {
     if (error.retryAfterMs !== null && error.retryAfterMs > 0) {
-      return error.retryAfterMs;
+      return Math.min(error.retryAfterMs, MAX_RETRY_DELAY_MS);
     }
     if (error.status === 429) {
       return Math.max(2000, baseDelayMs * Math.pow(2, attempt));

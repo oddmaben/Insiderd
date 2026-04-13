@@ -187,6 +187,14 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
 
     const now = Date.now();
     const maxAge = config.scanner.maxAgeMinutes * 60 * 1000;
+    const scanStats = {
+      candidates: candidates.length,
+      skippedAge: 0,
+      deferredLiquidity: 0,
+      skippedLaunchpad: 0,
+      queuedNoLiquidity: 0,
+      passedPrefilters: 0
+    };
     
     const newPairs: TokenPair[] = [];
     for (const rawPair of candidates) {
@@ -197,26 +205,42 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
       const age = now - p.pairCreatedAt;
       if (age > maxAge) {
         pendingLiquidityPairs.delete(p.pairAddress);
+        scanStats.skippedAge++;
         continue;
       }
 
       if (shouldDeferForLiquidityWarmup(p, age)) {
         queuePendingLiquidityPair(p, now);
         logger.debug(`⏳ ${p.baseToken.symbol}: Deferring until liquidity settles`);
+        scanStats.deferredLiquidity++;
         continue;
       }
 
       const isLocked = await isLiquidityLocked(p);
-      if (!isLocked) continue;
-
-      if (!hasPositiveLiquidity(p)) {
-        queuePendingLiquidityPair(p, now);
+      if (!isLocked) {
+        scanStats.skippedLaunchpad++;
         continue;
       }
 
+      if (!hasPositiveLiquidity(p)) {
+        if (age < LIQUIDITY_WARMUP_MS) {
+          queuePendingLiquidityPair(p, now);
+          scanStats.queuedNoLiquidity++;
+          continue;
+        }
+        logger.debug(`⚠️ ${p.baseToken.symbol}: Liquidity still zero after warmup, processing anyway`);
+      }
+
       pendingLiquidityPairs.delete(p.pairAddress);
+      scanStats.passedPrefilters++;
       newPairs.push(p);
     }
+
+    logger.info(
+      `Scan filter stats → candidates:${scanStats.candidates}, ageSkip:${scanStats.skippedAge}, ` +
+      `deferredLiq:${scanStats.deferredLiquidity}, launchpadSkip:${scanStats.skippedLaunchpad}, ` +
+      `queuedLiq:${scanStats.queuedNoLiquidity}, prefilterPass:${scanStats.passedPrefilters}`
+    );
 
     newPairs.forEach(p => {
       seenPairs.set(p.pairAddress, {
