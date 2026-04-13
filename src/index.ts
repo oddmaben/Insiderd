@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { logger } from './utils/logger.js';
 import { config } from './config.js';
 import { fetchNewPairs, getCacheStats, refreshPairData, TokenPair } from './services/scanner.js';
@@ -14,6 +16,9 @@ let isScanRunning = false;
 let scannerLoopTimer: NodeJS.Timeout | null = null;
 const LIQUIDITY_RECHECK_ATTEMPTS = 2;
 const LIQUIDITY_RECHECK_DELAY_MS = 1200;
+const DATA_DIR = path.join(process.cwd(), 'data');
+const PASSED_TOKENS_FILE = path.join(DATA_DIR, 'passed_tokens.json');
+const passedTokenAddresses = loadPassedTokenAddresses();
 
 async function scanLoop(): Promise<void> {
   if (isScanRunning) {
@@ -52,6 +57,11 @@ async function scanLoop(): Promise<void> {
           continue;
         }
 
+        if (wasAlreadyAlerted(pairForFiltering.baseToken.address)) {
+          logger.info(`🔁 Skipping duplicate passed token: ${pairForFiltering.baseToken.symbol}`);
+          continue;
+        }
+
         tokensPassed++;
         logger.success(`\n🎯 SAFE TOKEN FOUND: ${pair.baseToken.symbol}`);
         logger.info(`Total passed: ${tokensPassed}/${tokensFound}`);
@@ -60,6 +70,8 @@ async function scanLoop(): Promise<void> {
         
         if (!sent) {
           logger.error(`Failed to send alert for ${pair.baseToken.symbol}`);
+        } else {
+          rememberPassedToken(pairForFiltering.baseToken.address);
         }
 
         await new Promise(r => setTimeout(r, 1000));
@@ -111,6 +123,47 @@ function parseLiquidity(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function loadPassedTokenAddresses(): Set<string> {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(PASSED_TOKENS_FILE)) {
+      return new Set<string>();
+    }
+
+    const raw = fs.readFileSync(PASSED_TOKENS_FILE, 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return new Set<string>();
+    }
+    return new Set(
+      parsed
+        .filter((value): value is string => typeof value === 'string')
+        .map(value => value.toLowerCase())
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function savePassedTokenAddresses(): void {
+  try {
+    fs.writeFileSync(PASSED_TOKENS_FILE, JSON.stringify(Array.from(passedTokenAddresses.values())));
+  } catch (error: any) {
+    logger.warn(`Could not persist passed token list: ${error?.message || error}`);
+  }
+}
+
+function wasAlreadyAlerted(address: string): boolean {
+  return passedTokenAddresses.has(address.toLowerCase());
+}
+
+function rememberPassedToken(address: string): void {
+  passedTokenAddresses.add(address.toLowerCase());
+  savePassedTokenAddresses();
 }
 
 function healthCheck(): void {

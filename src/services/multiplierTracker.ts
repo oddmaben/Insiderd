@@ -1,17 +1,8 @@
-import { fetchWithRetry, sleep } from '../utils/fetch.js';
-import { config } from '../config.js';
+import { sleep } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
 import { sendRawCallMessage } from './telegram.js';
-
-interface DexScreenerPair {
-  priceUsd?: string;
-  fdv?: number;
-}
-
-interface DexScreenerResponse {
-  pair?: DexScreenerPair;
-}
+import { getBirdeyeTokenSnapshot } from './birdeye.js';
 
 const TARGET_MULTIPLIERS = [1.5, 2, 3, 5, 10, 20];
 
@@ -87,13 +78,11 @@ async function trackLoop(pair: TokenPair, state: TrackingState): Promise<void> {
     }
 
     try {
-      const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
-      const data = await fetchWithRetry<DexScreenerResponse>(url, {
-        timeout: 8000,
-        retries: 2
-      });
-
-      const currentMc = data?.pair?.fdv ?? state.baseMc;
+      const snapshot = await getBirdeyeTokenSnapshot(pair.baseToken.address);
+      const currentMc =
+        snapshot?.fdv ||
+        snapshot?.marketCap ||
+        state.baseMc;
 
       if (!currentMc || currentMc <= 0) {
         logger.warn(`[MULTIPLIER] No valid MC for ${symbol} on this check`);

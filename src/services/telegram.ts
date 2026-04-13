@@ -392,16 +392,16 @@ export async function sendStartup(): Promise<void> {
   }
 
   try {
-    const msg = `✅ <b>Insider Dinero Updated</b>\n\n` +
-                `New bot update has been deployed and is now live.\n\n` +
+    const msg = `🔄 <b>meme-scanner restarted</b>\n\n` +
+                `Process is back online and scanning.\n\n` +
                 `<b>Filter Settings:</b>\n` +
                 `Min Liquidity: ${formatCurrency(config.scanner.minLiquidity)}\n` +
                 `Min Volume (5m): ${formatCurrency(config.scanner.minVolume5m)}\n` +
                 `Max Age: ${config.scanner.maxAgeMinutes} minutes\n\n` +
                 `Waiting for new tokens...`;
 
-    await sendWithRetry(msg);
-    logger.info('Startup message sent');
+    await sendCallWithRetry(msg, { chatId: config.telegram.logChatId });
+    logger.info('Restart message sent to log chat');
   } catch (error: any) {
     logger.warn('Could not send startup message:', error.message);
   }

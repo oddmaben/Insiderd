@@ -12,6 +12,7 @@ module.exports = {
     max_restarts: Infinity,
     min_uptime: 5000,
     restart_delay: 5000,
+    cron_restart: '0 */6 * * *',
     
     // Memory management
     max_memory_restart: '500M',

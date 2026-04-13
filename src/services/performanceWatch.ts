@@ -1,16 +1,8 @@
-import { config } from '../config.js';
-import { fetchWithRetry, sleep } from '../utils/fetch.js';
+import { sleep } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
 import { sendMissedWinnerLog } from './telegram.js';
-
-interface DexScreenerPair {
-  fdv?: number;
-}
-
-interface DexScreenerResponse {
-  pair?: DexScreenerPair;
-}
+import { getBirdeyeTokenSnapshot } from './birdeye.js';
 
 interface WatchContext {
   status: 'PASSED' | 'REJECTED';
@@ -71,13 +63,8 @@ async function monitorTokenPerformance(pair: TokenPair, watchKey: string, state:
     }
 
     try {
-      const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
-      const data = await fetchWithRetry<DexScreenerResponse>(url, {
-        timeout: 8000,
-        retries: 2
-      });
-
-      const currentMc = data?.pair?.fdv ?? 0;
+      const snapshot = await getBirdeyeTokenSnapshot(pair.baseToken.address);
+      const currentMc = snapshot?.fdv || snapshot?.marketCap || 0;
       if (currentMc > 0) {
         const multiple = currentMc / state.baseMc;
         if (multiple >= TARGET_MULTIPLE) {
