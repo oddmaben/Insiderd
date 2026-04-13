@@ -1,87 +1,190 @@
-# Meme Coin Scanner v1.0 (Solana)
+# Insiderd (Solana Signal Bot)
 
-A production-ready, high-performance bot that scans for new meme coins on Solana, applies safety filters, and sends alerts to Telegram.
-<img width="480" height="862" alt="image" src="https://github.com/user-attachments/assets/9b65b981-2af9-4482-b603-71988495c21b" />
+Insiderd is a Telegram signal bot for Solana meme coins.  
+It scans DexScreener, filters by launchpad + risk policy + market rules, and posts formatted signals to your Telegram channel.  
+It also tracks winners after alert and sends multiplier updates (1.5x, 2x, 2.5x, 3x, 5x, 7x, 9x, 10x, 12x, 15x, 20x).
 
+## What This Bot Does
 
-## Features
+- Scans new Solana pairs from DexScreener using launchpad-focused search terms.
+- Restricts alerts to an allowlist of launchpads.
+- Applies strict RugCheck-based risk exclusions.
+- Enforces trading thresholds (market cap and 5-minute volume).
+- Sends a branded first alert to Telegram (`Insider Dinero` format).
+- Starts post-alert multiplier tracking and sends follow-up x-multiple messages.
+- Uses retries, rate limiting, caching, and auto-restart-friendly runtime behavior.
 
-- **Automated Scanning**: Scans DexScreener for new Solana pairs based on keywords (pump, pepe, doge, moon, cat, inu, shib, solana, bonk, wif).
-- **Advanced Filtering**:
-  - **Liquidity**: Checks if liquidity is above a minimum threshold.
-  - **Volume**: Checks if 5-minute volume is above a minimum threshold.
-  - **Age**: Filters pairs by maximum age.
-  - **FDV/Liquidity Ratio**: Detects potential scams with suspicious ratios.
-  - **Honeypot Detection**: Identifies honeypot patterns (high pump with low volume).
-- **Security Checks**:
-  - **Liquidity Lock**: Checks if liquidity is locked (supports Pump.fun and Moonshot).
-  - **RugCheck Integration**: Validates tokens against RugCheck.xyz API.
-- **Telegram Alerts**: Sends detailed alerts with token info, trading stats, and risk warnings.
-- **Resilience**:
-  - **Rate Limiting**: Prevents spamming Telegram.
-  - **Retry Logic**: Handles network failures gracefully.
-  - **Caching**: Prevents duplicate alerts.
-  - **Health Checks**: Monitors system status.
+## Supported Launchpads / Venues
 
-## Prerequisites
+- Pumpfun
+- Mayhem
+- Bonk
+- Bonkers
+- Bags
+- Memoo
+- Liquid
+- Bankr
+- Zora
+- Surge
+- Anoncoin
+- Moonshot
+- Wen.dev
+- Heaven
+- Sugar
+- TokenMill
+- Believe
+- Trends
+- Trends.fun
+- Studio
+- Moonit
+- Boop
+- xStocks
+- Launchlab
+- Dynamic BC
+- Raydium
+- Meteora
+- Pump AMM
+- Orca
 
-- Node.js (v16 or higher)
-- npm or yarn
+## Risk and Safety Filters
 
-## Installation
+The bot rejects tokens when RugCheck is missing/unavailable or when any matched risk includes:
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/MbotixTech/meme-coins-signal.git
-   cd meme-coins-signal
-   ```
+- incomplete security data
+- anti-whale mechanism / modifiable anti-whale
+- blacklist function
+- balances modifiable
+- honeypot detected
+- honeypot trigger
+- modifiable taxes
+- hidden owner
+- proxy contract
+- misc red flags
+- suspicious functions
+- tax farmer risk
+- unverified contract
+- mutable contract
+- transfers freezable
+- mintable tokens
+- rug pull risk
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+Additional hard rules:
 
-3. Configure environment variables:
-   Copy `.env.example` to `.env` and fill in the required values.
-   ```bash
-   cp .env.example .env
-   ```
+- Market cap must be between `$10,000` and `$500,000`
+- 5-minute volume must be `>= $2,000`
+- Pair age must be within `MAX_AGE` window
+- FDV/Liquidity scam ratio and honeypot-pattern checks are applied
 
-## Configuration
+## Telegram Message Flow
 
-Edit the `.env` file to configure the bot:
+1. **Primary Signal** (formatted overview):
+   - Brand header (`Insider Dinero`)
+   - Name, contract, market cap, age, volume, bonding line
+2. **Multiplier Follow-ups**:
+   - Sent when token reaches each configured multiplier target
+   - Format: `💸 $SYMBOL 1.5x | 2.1x with PRO ⚡️`
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `TELEGRAM_BOT_TOKEN` | Your Telegram Bot Token | Required |
-| `TELEGRAM_CHANNEL_ID` | Your Telegram Channel ID | Required |
-| `SOLANA_RPC_URL` | Solana RPC URL | https://api.mainnet-beta.solana.com |
-| `POLL_INTERVAL` | Scanning interval in ms | 3000 |
-| `MIN_LIQUIDITY` | Minimum liquidity in USD | 300 |
-| `MIN_VOLUME` | Minimum 5m volume in USD | 50 |
-| `MAX_AGE` | Maximum pair age in minutes | 10 |
-| `ENABLE_LOGS` | Enable file logging | true |
-| `SEND_STARTUP_MESSAGE` | Send a message on startup | true |
+## Requirements
 
-## Usage
+- Node.js 18+ (Node 20 recommended)
+- npm
+- Telegram bot token (BotFather)
+- Telegram channel where the bot is admin
 
-Start the scanner:
+## Setup
+
+1. Clone:
 
 ```bash
-npm start
+git clone https://github.com/oddmaben/Insiderd.git
+cd Insiderd
 ```
 
-For development:
+2. Install dependencies:
+
+```bash
+npm install
+```
+
+3. Create `.env` in the project root:
+
+```env
+TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
+TELEGRAM_CHANNEL_ID=@CalledByDinero
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+
+POLL_INTERVAL=3000
+MAX_AGE=10
+
+MIN_LIQUIDITY=300
+MIN_VOLUME=2000
+MIN_MARKET_CAP=10000
+MAX_MARKET_CAP=500000
+
+SEND_STARTUP_MESSAGE=true
+ENABLE_LOGS=true
+```
+
+## Run
+
+Development:
 
 ```bash
 npm run dev
 ```
 
+Production build:
+
+```bash
+npm run build
+npm start
+```
+
+## 24/7 Process Management (PM2)
+
+Start:
+
+```bash
+npm run build
+npm run pm2:start
+```
+
+Logs:
+
+```bash
+npm run pm2:logs
+```
+
+Restart:
+
+```bash
+npm run pm2:restart
+```
+
+Stop:
+
+```bash
+npm run pm2:stop
+```
+
+To keep PM2 running across server reboots:
+
+```bash
+pm2 startup
+pm2 save
+```
+
+## Security Notes
+
+- Do not commit `.env` or bot tokens.
+- If a token was ever shared publicly, rotate it immediately in BotFather.
+- Keep bot admin permissions limited to what is needed to post in channel.
+
 ## Disclaimer
 
-This tool is for educational and research purposes only. Cryptocurrency investments, especially meme coins, are highly volatile and risky. Always Do Your Own Research (DYOR). The developers are not responsible for any financial losses.
+This software is for educational/research use.  
+Crypto trading is highly risky and volatile. Always DYOR.
 
+## License
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT - see [LICENSE](LICENSE).
