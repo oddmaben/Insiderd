@@ -124,7 +124,6 @@ export const logger = {
   
   debug: (msg: string, data?: any) => {
     writeToFile('DEBUG', msg, data);
-    enqueueTelegramLog('DEBUG', msg);
   },
   
   warn: (msg: string, data?: any) => {

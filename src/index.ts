@@ -11,6 +11,7 @@ let tokensFound = 0;
 let tokensPassed = 0;
 let lastHealthCheck = Date.now();
 let isScanRunning = false;
+let scannerLoopTimer: NodeJS.Timeout | null = null;
 const LIQUIDITY_RECHECK_ATTEMPTS = 2;
 const LIQUIDITY_RECHECK_DELAY_MS = 1200;
 
@@ -134,9 +135,26 @@ function startScanner(): void {
   );
   logger.info('Press Ctrl+C to stop\n');
 
-  scanLoop();
-  setInterval(scanLoop, config.scanner.pollInterval);
+  void runScannerLoop();
   setInterval(healthCheck, 300000);
+}
+
+async function runScannerLoop(): Promise<void> {
+  while (true) {
+    const startedAt = Date.now();
+    await scanLoop();
+    const elapsed = Date.now() - startedAt;
+    const waitMs = Math.max(0, config.scanner.pollInterval - elapsed);
+
+    if (waitMs === 0) {
+      continue;
+    }
+
+    await new Promise<void>((resolve) => {
+      scannerLoopTimer = setTimeout(() => resolve(), waitMs);
+    });
+    scannerLoopTimer = null;
+  }
 }
 
 async function main(): Promise<void> {
@@ -176,6 +194,9 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 process.on('SIGINT', () => {
+  if (scannerLoopTimer) {
+    clearTimeout(scannerLoopTimer);
+  }
   logger.info('\n\n━━━ Shutdown Signal Received ━━━');
   logger.info(`Total scans: ${scanCount}`);
   logger.info(`Tokens found: ${tokensFound}`);
@@ -185,6 +206,9 @@ process.on('SIGINT', () => {
 });
 
 process.on('SIGTERM', () => {
+  if (scannerLoopTimer) {
+    clearTimeout(scannerLoopTimer);
+  }
   logger.info('\nShutting down gracefully...\n');
   process.exit(0);
 });
