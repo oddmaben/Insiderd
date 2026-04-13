@@ -57,12 +57,20 @@ interface CacheEntry {
   pairCreatedAt: number;
 }
 
+interface PendingLiquidityEntry {
+  pair: TokenPair;
+  firstSeenAt: number;
+  checks: number;
+}
+
 const CACHE_FILE = path.join(process.cwd(), 'data', 'seen_pairs.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
 const SEARCH_TERMS_PER_SCAN = 4;
 const SEARCH_REQUEST_DELAY_MS = 350;
 const LIQUIDITY_WARMUP_MS = 2 * 60 * 1000;
+const PENDING_LIQUIDITY_WINDOW_MS = 8 * 60 * 1000;
+const MAX_PENDING_LIQUIDITY_CHECKS = 6;
 const SEARCH_TERMS = [
   'pumpfun',
   'bonk',
@@ -121,6 +129,7 @@ function saveCache() {
 }
 
 const seenPairs = loadCache();
+const pendingLiquidityPairs = new Map<string, PendingLiquidityEntry>();
 let lastCleanup = Date.now();
 let searchTermCursor = 0;
 
@@ -170,20 +179,28 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
     logger.info(`Fetched ${uniquePairs.length} total pairs`);
 
     const unseenPairs = uniquePairs.filter(p => !seenPairs.has(p.pairAddress));
+    const pendingRechecks = getPendingRecheckPairs();
+    const candidates = Array.from(
+      new Map([...unseenPairs, ...pendingRechecks].map(p => [p.pairAddress, p])).values()
+    );
 
     const now = Date.now();
     const maxAge = config.scanner.maxAgeMinutes * 60 * 1000;
     
     const newPairs: TokenPair[] = [];
-    for (const rawPair of unseenPairs) {
+    for (const rawPair of candidates) {
       const p = await hydratePair(rawPair);
 
       if (!p.pairCreatedAt) continue;
 
       const age = now - p.pairCreatedAt;
-      if (age > maxAge) continue;
+      if (age > maxAge) {
+        pendingLiquidityPairs.delete(p.pairAddress);
+        continue;
+      }
 
       if (shouldDeferForLiquidityWarmup(p, age)) {
+        queuePendingLiquidityPair(p, now);
         logger.debug(`⏳ ${p.baseToken.symbol}: Deferring until liquidity settles`);
         continue;
       }
@@ -194,6 +211,12 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
       const isSafe = await checkRugStatus(p);
       if (!isSafe) continue;
 
+      if (!hasPositiveLiquidity(p)) {
+        queuePendingLiquidityPair(p, now);
+        continue;
+      }
+
+      pendingLiquidityPairs.delete(p.pairAddress);
       newPairs.push(p);
     }
 
@@ -351,6 +374,52 @@ function shouldDeferForLiquidityWarmup(pair: TokenPair, ageMs: number): boolean 
   return volume5m > 0 || marketCap > 0;
 }
 
+function queuePendingLiquidityPair(pair: TokenPair, now: number): void {
+  const existing = pendingLiquidityPairs.get(pair.pairAddress);
+  if (!existing) {
+    pendingLiquidityPairs.set(pair.pairAddress, {
+      pair,
+      firstSeenAt: now,
+      checks: 1
+    });
+    seenPairs.set(pair.pairAddress, {
+      timestamp: now,
+      pairCreatedAt: pair.pairCreatedAt || 0
+    });
+    return;
+  }
+
+  existing.pair = pair;
+  existing.checks += 1;
+
+  const expiredByChecks = existing.checks >= MAX_PENDING_LIQUIDITY_CHECKS;
+  const expiredByTime = now - existing.firstSeenAt > PENDING_LIQUIDITY_WINDOW_MS;
+  if (expiredByChecks || expiredByTime) {
+    pendingLiquidityPairs.delete(pair.pairAddress);
+  }
+}
+
+function getPendingRecheckPairs(): TokenPair[] {
+  if (pendingLiquidityPairs.size === 0) {
+    return [];
+  }
+
+  const now = Date.now();
+  const rechecks: TokenPair[] = [];
+
+  for (const [address, entry] of pendingLiquidityPairs.entries()) {
+    const expiredByChecks = entry.checks >= MAX_PENDING_LIQUIDITY_CHECKS;
+    const expiredByTime = now - entry.firstSeenAt > PENDING_LIQUIDITY_WINDOW_MS;
+    if (expiredByChecks || expiredByTime) {
+      pendingLiquidityPairs.delete(address);
+      continue;
+    }
+    rechecks.push(entry.pair);
+  }
+
+  return rechecks;
+}
+
 function getSearchTermsForScan(): string[] {
   if (SEARCH_TERMS.length <= SEARCH_TERMS_PER_SCAN) {
     return SEARCH_TERMS;
@@ -414,6 +483,7 @@ export function getCacheStats(): { size: number; oldest: number } {
 
 export function clearCache(): void {
   seenPairs.clear();
+  pendingLiquidityPairs.clear();
   if (fs.existsSync(CACHE_FILE)) {
     fs.unlinkSync(CACHE_FILE);
   }

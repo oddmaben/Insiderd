@@ -112,6 +112,8 @@ class RequestQueue {
 
 const circuitBreaker = new CircuitBreaker();
 const requestQueue = new RequestQueue();
+const hostLastRequestAt = new Map<string, number>();
+const HOST_MIN_INTERVAL_MS = 180;
 
 function addJitter(delay: number): number {
   const jitter = Math.random() * 0.3 * delay;
@@ -147,10 +149,13 @@ export async function fetchWithRetry<T>(
   }
 
   const safeUrl = sanitizeUrl(url);
+  const parsedUrl = new URL(safeUrl);
 
   return requestQueue.add(async () => {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
+        await throttleHost(parsedUrl.host);
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -167,7 +172,9 @@ export async function fetchWithRetry<T>(
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+          const retryAfterSeconds = response.headers.get('retry-after');
+          const retryAfterMs = retryAfterSeconds ? Math.max(0, Number(retryAfterSeconds) * 1000) : null;
+          throw new HttpError(response.status, retryAfterMs);
         }
 
         const data = await response.json() as T;
@@ -180,6 +187,7 @@ export async function fetchWithRetry<T>(
 
       } catch (error) {
         const isLastAttempt = attempt === retries;
+        const retryDelayMs = getRetryDelayMs(error, retryDelay, attempt);
         
         if (isLastAttempt) {
           console.error(`[FETCH] Failed after ${retries} attempts:`, safeUrl);
@@ -189,7 +197,7 @@ export async function fetchWithRetry<T>(
           return null;
         }
 
-        const delay = addJitter(retryDelay * Math.pow(2, attempt - 1));
+        const delay = addJitter(retryDelayMs);
         console.warn(`[FETCH] Retry ${attempt}/${retries} in ${Math.floor(delay)}ms...`);
         await sleep(delay);
       }
@@ -197,6 +205,41 @@ export async function fetchWithRetry<T>(
 
     return null;
   });
+}
+
+class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly retryAfterMs: number | null = null
+  ) {
+    super(`HTTP ${status}`);
+  }
+}
+
+async function throttleHost(host: string): Promise<void> {
+  const now = Date.now();
+  const lastAt = hostLastRequestAt.get(host) || 0;
+  const elapsed = now - lastAt;
+  if (elapsed < HOST_MIN_INTERVAL_MS) {
+    await sleep(HOST_MIN_INTERVAL_MS - elapsed);
+  }
+  hostLastRequestAt.set(host, Date.now());
+}
+
+function getRetryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
+  if (error instanceof HttpError) {
+    if (error.retryAfterMs !== null && error.retryAfterMs > 0) {
+      return error.retryAfterMs;
+    }
+    if (error.status === 429) {
+      return Math.max(2000, baseDelayMs * Math.pow(2, attempt));
+    }
+    if (error.status >= 500) {
+      return Math.max(1500, baseDelayMs * Math.pow(2, attempt - 1));
+    }
+  }
+
+  return baseDelayMs * Math.pow(2, attempt - 1);
 }
 
 export function sleep(ms: number): Promise<void> {
