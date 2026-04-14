@@ -89,3 +89,17 @@ export async function getDexTokenPairs(chainId: string, tokenAddress: string): P
   }
   return data?.pairs || [];
 }
+
+export async function getDexTokenPairsExpanded(chainId: string, tokenAddress: string): Promise<DexScreenerPair[]> {
+  const url = `${apiBase()}/token-pairs/v1/${encodeURIComponent(chainId)}/${encodeURIComponent(tokenAddress)}`;
+  const data = await fetchWithRetry<TokenPairsResponse>(url, {
+    timeout: 9000,
+    retries: 2,
+    skipCircuitBreaker: true
+  });
+
+  if (Array.isArray(data)) {
+    return data;
+  }
+  return data?.pairs || [];
+}

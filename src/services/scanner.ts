@@ -3,7 +3,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { isLiquidityLocked } from './liquidityCheck.js';
-import { DexScreenerPair, getDexPair, getDexTokenPairs, searchDexPairs } from './dexscreener.js';
+import { DexScreenerPair, getDexPair, getDexTokenPairs, getDexTokenPairsExpanded, searchDexPairs } from './dexscreener.js';
 
 export interface TokenPair {
   chainId: string;
@@ -272,11 +272,21 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
       return mergedPair;
     }
 
+    const expandedPairs = await getDexTokenPairsExpanded(pair.chainId, pair.baseToken.address);
+    const expandedHydrated = pickBestHydrationPair(mergedPair, expandedPairs.map(normalizeDexPair));
+    if (expandedHydrated && hasPositiveLiquidity(expandedHydrated)) {
+      return mergePairs(mergedPair, expandedHydrated);
+    }
+
     const tokenPairs = await getDexTokenPairs(pair.chainId, pair.baseToken.address);
     const hydrated = pickBestHydrationPair(mergedPair, tokenPairs.map(normalizeDexPair));
     if (hydrated) {
       return mergePairs(mergedPair, hydrated);
     }
+
+    logger.debug(
+      `[LIQ-CHECK] ${pair.baseToken.symbol}: pair endpoint + token endpoints returned no positive liquidity`
+    );
   } catch (error) {
     logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
   }
