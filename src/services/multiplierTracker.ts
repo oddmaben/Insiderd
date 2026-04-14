@@ -2,7 +2,7 @@ import { sleep } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
 import { sendRawCallMessage } from './telegram.js';
-import { getBirdeyeTokenSnapshot } from './birdeye.js';
+import { getDexPair } from './dexscreener.js';
 
 const TARGET_MULTIPLIERS = [1.5, 2, 3, 5, 10, 20];
 
@@ -78,11 +78,8 @@ async function trackLoop(pair: TokenPair, state: TrackingState): Promise<void> {
     }
 
     try {
-      const snapshot = await getBirdeyeTokenSnapshot(pair.baseToken.address);
-      const currentMc =
-        snapshot?.fdv ||
-        snapshot?.marketCap ||
-        state.baseMc;
+      const latestPair = await getDexPair(pair.chainId, pair.pairAddress);
+      const currentMc = latestPair?.fdv || latestPair?.marketCap || state.baseMc;
 
       if (!currentMc || currentMc <= 0) {
         logger.warn(`[MULTIPLIER] No valid MC for ${symbol} on this check`);

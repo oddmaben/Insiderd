@@ -2,7 +2,7 @@ import { sleep } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
 import { sendMissedWinnerLog } from './telegram.js';
-import { getBirdeyeTokenSnapshot } from './birdeye.js';
+import { getDexPair } from './dexscreener.js';
 
 interface WatchContext {
   status: 'PASSED' | 'REJECTED';
@@ -63,8 +63,8 @@ async function monitorTokenPerformance(pair: TokenPair, watchKey: string, state:
     }
 
     try {
-      const snapshot = await getBirdeyeTokenSnapshot(pair.baseToken.address);
-      const currentMc = snapshot?.fdv || snapshot?.marketCap || 0;
+      const latestPair = await getDexPair(pair.chainId, pair.pairAddress);
+      const currentMc = latestPair?.fdv || latestPair?.marketCap || 0;
       if (currentMc > 0) {
         const multiple = currentMc / state.baseMc;
         if (multiple >= TARGET_MULTIPLE) {

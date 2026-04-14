@@ -73,7 +73,7 @@ export const config: Config = {
   },
   
   api: {
-    dexscreener: 'https://api.dexscreener.com/latest/dex',
+    dexscreener: 'https://api.dexscreener.com',
     birdeye: 'https://public-api.birdeye.so',
     birdeyeApiKey: process.env.BIRDEYE_API_KEY || undefined,
     solscan: 'https://api.solscan.io',

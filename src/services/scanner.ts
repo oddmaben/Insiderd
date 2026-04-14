@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
-import { getBirdeyeLiquidityUsd, getBirdeyeTokenList, getBirdeyeTokenSnapshot, clearBirdeyeCache, BirdeyeTokenListItem } from './birdeye.js';
+import { isLiquidityLocked } from './liquidityCheck.js';
+import { DexScreenerPair, getDexPair, getDexTokenPairs, searchDexPairs } from './dexscreener.js';
 
 export interface TokenPair {
   chainId: string;
@@ -51,11 +52,43 @@ interface PendingLiquidityEntry {
 const CACHE_FILE = path.join(process.cwd(), 'data', 'seen_pairs.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
-const BIRDEYE_LIST_LIMIT = 100;
-const BIRDEYE_LIST_PAGES = 2;
+const SEARCH_TERMS_PER_SCAN = 4;
+const SEARCH_REQUEST_DELAY_MS = 350;
+const MAX_CANDIDATES_PER_SCAN = 30;
 const LIQUIDITY_WARMUP_MS = 2 * 60 * 1000;
 const PENDING_LIQUIDITY_WINDOW_MS = 8 * 60 * 1000;
 const MAX_PENDING_LIQUIDITY_CHECKS = 6;
+const SEARCH_TERMS = [
+  'pumpfun',
+  'mayhem',
+  'bonk',
+  'bonkers',
+  'bags',
+  'memoo',
+  'liquid',
+  'bankr',
+  'zora',
+  'surge',
+  'anoncoin',
+  'moonshot',
+  'wen.dev',
+  'heaven',
+  'sugar',
+  'tokenmill',
+  'believe',
+  'trends',
+  'trends.fun',
+  'studio',
+  'moonit',
+  'boop',
+  'xstocks',
+  'launchlab',
+  'dynamic bc',
+  'raydium',
+  'meteora',
+  'pump amm',
+  'orca'
+];
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -86,6 +119,7 @@ function saveCache() {
 const seenPairs = loadCache();
 const pendingLiquidityPairs = new Map<string, PendingLiquidityEntry>();
 let lastCleanup = Date.now();
+let searchTermCursor = 0;
 
 export async function fetchNewPairs(): Promise<TokenPair[]> {
   try {
@@ -95,16 +129,30 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
     }
 
     const allPairs: TokenPair[] = [];
-    for (let page = 0; page < BIRDEYE_LIST_PAGES; page++) {
-      const items = await getBirdeyeTokenList(BIRDEYE_LIST_LIMIT, page * BIRDEYE_LIST_LIMIT);
-      if (!items.length) {
-        continue;
+    const termsForThisScan = getSearchTermsForScan();
+    for (let i = 0; i < termsForThisScan.length; i++) {
+      const term = termsForThisScan[i];
+
+      try {
+        const pairs = await searchDexPairs(term);
+        if (pairs.length > 0) {
+          allPairs.push(
+            ...pairs
+              .filter(p => p.chainId?.toLowerCase() === 'solana')
+              .map(pair => normalizeDexPair(pair))
+          );
+        }
+      } catch (error) {
+        logger.warn(`Search term "${term}" failed:`, error);
       }
-      allPairs.push(...items.map(mapBirdeyeItemToPair));
+
+      if (i < termsForThisScan.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, SEARCH_REQUEST_DELAY_MS));
+      }
     }
 
     if (allPairs.length === 0) {
-      logger.warn('No tokens returned from BirdEye token list');
+      logger.warn('No pairs returned from DexScreener');
       return [];
     }
 
@@ -114,7 +162,10 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
 
     logger.info(`Fetched ${uniquePairs.length} total pairs`);
 
-    const unseenPairs = uniquePairs.filter(p => !seenPairs.has(p.pairAddress));
+    const unseenPairs = uniquePairs
+      .filter(p => !seenPairs.has(p.pairAddress))
+      .sort((a, b) => (b.pairCreatedAt || 0) - (a.pairCreatedAt || 0))
+      .slice(0, MAX_CANDIDATES_PER_SCAN);
     const pendingRechecks = getPendingRecheckPairs();
     const candidates = Array.from(
       new Map([...unseenPairs, ...pendingRechecks].map(p => [p.pairAddress, p])).values()
@@ -126,6 +177,7 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
       candidates: candidates.length,
       skippedAge: 0,
       deferredLiquidity: 0,
+      skippedLaunchpad: 0,
       queuedNoLiquidity: 0,
       passedPrefilters: 0
     };
@@ -149,6 +201,12 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
         continue;
       }
 
+      const isAllowed = await isLiquidityLocked(p);
+      if (!isAllowed) {
+        scanStats.skippedLaunchpad++;
+        continue;
+      }
+
       if (!hasPositiveLiquidity(p)) {
         if (age < LIQUIDITY_WARMUP_MS) {
           queuePendingLiquidityPair(p, now);
@@ -165,8 +223,8 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
 
     logger.info(
       `Scan filter stats → candidates:${scanStats.candidates}, ageSkip:${scanStats.skippedAge}, ` +
-      `deferredLiq:${scanStats.deferredLiquidity}, queuedLiq:${scanStats.queuedNoLiquidity}, ` +
-      `prefilterPass:${scanStats.passedPrefilters}`
+      `deferredLiq:${scanStats.deferredLiquidity}, launchpadSkip:${scanStats.skippedLaunchpad}, ` +
+      `queuedLiq:${scanStats.queuedNoLiquidity}, prefilterPass:${scanStats.passedPrefilters}`
     );
 
     newPairs.forEach(p => {
@@ -204,31 +262,58 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
   }
 
   try {
-    const snapshot = await getBirdeyeTokenSnapshot(pair.baseToken.address);
-    if (snapshot) {
-      return {
-        ...pair,
-        priceUsd: snapshot.priceUsd > 0 ? String(snapshot.priceUsd) : pair.priceUsd,
-        fdv: snapshot.fdv > 0 ? snapshot.fdv : (snapshot.marketCap > 0 ? snapshot.marketCap : pair.fdv),
-        liquidity: {
-          ...(pair.liquidity || { usd: 0 }),
-          usd: snapshot.liquidityUsd > 0 ? snapshot.liquidityUsd : (pair.liquidity?.usd || 0)
-        },
-        volume: {
-          ...(pair.volume || { m5: 0, h1: 0, h24: 0 }),
-          m5: snapshot.volume5mUsd > 0 ? snapshot.volume5mUsd : (pair.volume?.m5 || 0)
-        },
-        info: {
-          ...(pair.info || {}),
-          imageUrl: snapshot.logoUrl || pair.info?.imageUrl
-        }
-      };
+    const pairSnapshot = await getDexPair(pair.chainId, pair.pairAddress);
+    const mergedPair = pairSnapshot ? mergePairs(pair, pairSnapshot) : pair;
+    if (hasPositiveLiquidity(mergedPair)) {
+      return mergedPair;
+    }
+
+    if (!pair.baseToken?.address) {
+      return mergedPair;
+    }
+
+    const tokenPairs = await getDexTokenPairs(pair.chainId, pair.baseToken.address);
+    const hydrated = pickBestHydrationPair(mergedPair, tokenPairs.map(normalizeDexPair));
+    if (hydrated) {
+      return mergePairs(mergedPair, hydrated);
     }
   } catch (error) {
     logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
   }
 
-  return hydrateLiquidityFromBirdeye(pair);
+  return pair;
+}
+
+function pickBestHydrationPair(sourcePair: TokenPair, candidates: TokenPair[]): TokenPair | null {
+  if (!candidates.length) {
+    return null;
+  }
+
+  const chainId = sourcePair.chainId?.toLowerCase();
+  const sourcePairAddress = sourcePair.pairAddress?.toLowerCase();
+  const sourceDex = sourcePair.dexId?.toLowerCase();
+  const sourceQuoteAddress = sourcePair.quoteToken?.address?.toLowerCase();
+
+  const sameChain = candidates.filter(p => p.chainId?.toLowerCase() === chainId);
+  const pool = sameChain.length ? sameChain : candidates;
+  const highestLiquidityPair = pool
+    .slice()
+    .sort((a, b) => (readLiquidityUsd(b) - readLiquidityUsd(a)))[0] || null;
+
+  const exactPair = pool.find(p => p.pairAddress?.toLowerCase() === sourcePairAddress);
+  if (exactPair && (hasPositiveLiquidity(exactPair) || !hasPositiveLiquidity(highestLiquidityPair))) {
+    return exactPair;
+  }
+
+  const sameDexAndQuote = pool.find(p =>
+    p.dexId?.toLowerCase() === sourceDex &&
+    p.quoteToken?.address?.toLowerCase() === sourceQuoteAddress
+  );
+  if (sameDexAndQuote && (hasPositiveLiquidity(sameDexAndQuote) || !hasPositiveLiquidity(highestLiquidityPair))) {
+    return sameDexAndQuote;
+  }
+
+  return highestLiquidityPair;
 }
 
 function hasPositiveLiquidity(pair: TokenPair | null): boolean {
@@ -358,7 +443,6 @@ export function getCacheStats(): { size: number; oldest: number } {
 export function clearCache(): void {
   seenPairs.clear();
   pendingLiquidityPairs.clear();
-  clearBirdeyeCache();
   if (fs.existsSync(CACHE_FILE)) {
     fs.unlinkSync(CACHE_FILE);
   }
@@ -370,90 +454,73 @@ function expirePendingPair(pairAddress: string): void {
   seenPairs.delete(pairAddress);
 }
 
-async function hydrateLiquidityFromBirdeye(pair: TokenPair): Promise<TokenPair> {
-  if (hasPositiveLiquidity(pair)) {
-    return pair;
+function getSearchTermsForScan(): string[] {
+  if (SEARCH_TERMS.length <= SEARCH_TERMS_PER_SCAN) {
+    return SEARCH_TERMS;
   }
 
-  const volume5m = pair.volume?.m5 || 0;
-  const fdv = pair.fdv || 0;
-  const likelyNoiseToken = volume5m < 300 && fdv < config.scanner.minMarketCap;
-  if (likelyNoiseToken) {
-    return pair;
+  const selected: string[] = [];
+  for (let i = 0; i < SEARCH_TERMS_PER_SCAN; i++) {
+    const idx = (searchTermCursor + i) % SEARCH_TERMS.length;
+    selected.push(SEARCH_TERMS[idx]);
   }
-
-  const tokenMint = pair.baseToken?.address;
-  if (!tokenMint) {
-    return pair;
-  }
-
-  const birdeyeLiquidity = await getBirdeyeLiquidityUsd(tokenMint);
-  if (!birdeyeLiquidity || birdeyeLiquidity <= 0) {
-    return pair;
-  }
-
-  logger.debug(`Birdeye liquidity hydration succeeded for ${pair.baseToken.symbol}: $${birdeyeLiquidity.toFixed(0)}`);
-  return {
-    ...pair,
-    liquidity: {
-      ...(pair.liquidity || { usd: 0 }),
-      usd: birdeyeLiquidity
-    }
-  };
+  searchTermCursor = (searchTermCursor + SEARCH_TERMS_PER_SCAN) % SEARCH_TERMS.length;
+  return selected;
 }
 
-function mapBirdeyeItemToPair(item: BirdeyeTokenListItem): TokenPair {
-  const createdAtMs = resolveCreationTimeMs(item);
-  const liquidityUsd = toNumber(item.liquidity);
-  const volume5m = toNumber(item.volume_5m_usd);
-  const marketCap = toNumber(item.fdv) || toNumber(item.market_cap);
-  const price = toNumber(item.price);
-  const priceChange5m = toNumber(item.price_change_5m_percent);
-
+function normalizeDexPair(pair: DexScreenerPair): TokenPair {
   return {
-    chainId: 'solana',
-    dexId: 'birdeye',
-    pairAddress: item.address,
-    baseToken: {
-      address: item.address,
-      name: item.name || item.symbol || 'Unknown',
-      symbol: item.symbol || 'UNKNOWN'
-    },
-    quoteToken: {
-      address: 'So11111111111111111111111111111111111111112',
-      symbol: 'SOL'
-    },
-    priceUsd: price > 0 ? String(price) : undefined,
-    fdv: marketCap > 0 ? marketCap : undefined,
+    chainId: pair.chainId,
+    dexId: pair.dexId,
+    pairAddress: pair.pairAddress,
+    baseToken: pair.baseToken,
+    quoteToken: pair.quoteToken,
+    priceUsd: pair.priceUsd,
+    fdv: toNumber(pair.fdv) || toNumber(pair.marketCap) || undefined,
     liquidity: {
-      usd: liquidityUsd
+      usd: toNumber(pair.liquidity?.usd)
     },
     volume: {
-      m5: volume5m,
-      h1: 0,
-      h24: 0
+      m5: toNumber(pair.volume?.m5),
+      h1: toNumber(pair.volume?.h1),
+      h24: toNumber(pair.volume?.h24)
     },
     priceChange: {
-      m5: priceChange5m
+      m5: toNumber(pair.priceChange?.m5)
     },
-    pairCreatedAt: createdAtMs,
-    url: `https://birdeye.so/token/${item.address}?chain=solana`,
+    pairCreatedAt: pair.pairCreatedAt,
+    url: pair.url,
     info: {
-      imageUrl: item.logo_uri
+      imageUrl: pair.info?.imageUrl
     }
   };
 }
 
-function resolveCreationTimeMs(item: BirdeyeTokenListItem): number {
-  const recentListingMs = toNumber(item.recent_listing_time) * 1000;
-  if (recentListingMs > 0) {
-    return recentListingMs;
-  }
-  const lastTradeMs = toNumber(item.last_trade_unix_time) * 1000;
-  if (lastTradeMs > 0) {
-    return lastTradeMs;
-  }
-  return Date.now();
+function mergePairs(base: TokenPair, patch: TokenPair): TokenPair {
+  return {
+    ...base,
+    ...patch,
+    baseToken: patch.baseToken || base.baseToken,
+    quoteToken: patch.quoteToken || base.quoteToken,
+    liquidity: {
+      ...(base.liquidity || { usd: 0 }),
+      ...(patch.liquidity || {})
+    },
+    volume: {
+      ...(base.volume || { m5: 0, h1: 0, h24: 0 }),
+      ...(patch.volume || {})
+    },
+    priceChange: {
+      ...(base.priceChange || { m5: 0 }),
+      ...(patch.priceChange || {})
+    },
+    info: {
+      ...(base.info || {}),
+      ...(patch.info || {})
+    },
+    fdv: patch.fdv || base.fdv,
+    pairCreatedAt: patch.pairCreatedAt || base.pairCreatedAt
+  };
 }
 
 function toNumber(value: unknown): number {
