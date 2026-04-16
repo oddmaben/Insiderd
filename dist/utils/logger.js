@@ -107,7 +107,6 @@ export const logger = {
     },
     debug: (msg, data) => {
         writeToFile('DEBUG', msg, data);
-        enqueueTelegramLog('DEBUG', msg);
     },
     warn: (msg, data) => {
         console.log(`${colors.gray}[${timestamp()}]${colors.reset} ${colors.yellow}WARN${colors.reset}    ${msg}`);

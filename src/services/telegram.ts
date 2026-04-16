@@ -10,6 +10,7 @@ let bot: Telegraf;
 let isReady = false;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
+let logChatRoutingWarningShown = false;
 
 const MESSAGE_RATE_LIMIT = 1000;
 let lastMessageTime = 0;
@@ -31,6 +32,10 @@ interface SendOptions {
   photoUrl?: string;
   replyToMessageId?: number;
   chatId?: string;
+}
+
+function getLogDestination(): string {
+  return config.telegram.logUserId || config.telegram.logChatId;
 }
 
 function getDexscreenerImageUrl(pair: TokenPair): string {
@@ -129,6 +134,18 @@ async function sendCallWithRetry(
     const sent = await bot.telegram.sendMessage(targetChatId, message, payloadBase);
     return sent.message_id;
   } catch (error: any) {
+    if (
+      targetChatId === getLogDestination() &&
+      typeof targetChatId === 'string' &&
+      targetChatId.startsWith('@') &&
+      !logChatRoutingWarningShown
+    ) {
+      logChatRoutingWarningShown = true;
+      logger.warn(
+        `[TELEGRAM] Log chat "${targetChatId}" failed. For DM delivery, set TELEGRAM_LOG_USER_ID to your numeric chat id.`
+      );
+    }
+
     if (options.photoUrl) {
       logger.warn('[TELEGRAM] Photo send failed, retrying as text message');
       return sendCallWithRetry(message, {
@@ -348,7 +365,7 @@ export async function sendTokenEvaluationLog(
 
   await sendCallWithRetry(message, {
     photoUrl,
-    chatId: config.telegram.logChatId
+    chatId: getLogDestination()
   });
 }
 
@@ -379,7 +396,7 @@ export async function sendMissedWinnerLog(
 
   await sendCallWithRetry(msg, {
     photoUrl: getDexscreenerImageUrl(pair),
-    chatId: config.telegram.logChatId
+    chatId: getLogDestination()
   });
 }
 
@@ -400,7 +417,7 @@ export async function sendStartup(): Promise<void> {
                 `Max Age: ${config.scanner.maxAgeMinutes} minutes\n\n` +
                 `Waiting for new tokens...`;
 
-    await sendCallWithRetry(msg, { chatId: config.telegram.logChatId });
+    await sendCallWithRetry(msg, { chatId: getLogDestination() });
     logger.info('Restart message sent to log chat');
   } catch (error: any) {
     logger.warn('Could not send startup message:', error.message);

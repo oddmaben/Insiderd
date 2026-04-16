@@ -3,10 +3,10 @@ import { logger } from '../utils/logger.js';
 export function filterToken(pair) {
     const warnings = [];
     const symbol = pair.baseToken.symbol;
-    const liquidity = pair.liquidity?.usd || 0;
-    const volume5m = pair.volume?.m5 || 0;
-    const priceChange = pair.priceChange?.m5 || 0;
-    const marketCap = pair.fdv || 0;
+    const liquidity = toNumber(pair.liquidity?.usd);
+    const volume5m = toNumber(pair.volume?.m5);
+    const priceChange = toNumber(pair.priceChange?.m5);
+    const marketCap = toNumber(pair.fdv);
     const stats = { liquidity, volume5m, priceChange, marketCap };
     logger.info(`🔍 Filtering: ${symbol}`);
     logger.info(`   Liquidity: ${formatCurrency(liquidity)}`);
@@ -106,5 +106,14 @@ export function formatCurrency(value) {
     if (value >= 1000)
         return `$${(value / 1000).toFixed(1)}k`;
     return `$${value.toFixed(0)}`;
+}
+function toNumber(value) {
+    if (typeof value === 'number')
+        return Number.isFinite(value) ? value : 0;
+    if (typeof value === 'string') {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
 }
 //# sourceMappingURL=filter.js.map

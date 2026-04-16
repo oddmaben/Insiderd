@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { logger } from './utils/logger.js';
 import { config } from './config.js';
 import { fetchNewPairs, getCacheStats, refreshPairData } from './services/scanner.js';
@@ -9,9 +11,19 @@ let scanCount = 0;
 let tokensFound = 0;
 let tokensPassed = 0;
 let lastHealthCheck = Date.now();
-const LIQUIDITY_RECHECK_ATTEMPTS = 2;
-const LIQUIDITY_RECHECK_DELAY_MS = 1200;
+let isScanRunning = false;
+let scannerLoopTimer = null;
+const LIQUIDITY_RECHECK_ATTEMPTS = 4;
+const LIQUIDITY_RECHECK_DELAY_MS = 2000;
+const DATA_DIR = path.join(process.cwd(), 'data');
+const PASSED_TOKENS_FILE = path.join(DATA_DIR, 'passed_tokens.json');
+const passedTokenAddresses = loadPassedTokenAddresses();
 async function scanLoop() {
+    if (isScanRunning) {
+        logger.debug('Previous scan still running, skipping this tick');
+        return;
+    }
+    isScanRunning = true;
     try {
         scanCount++;
         logger.info(`\n━━━ Scan #${scanCount} ━━━`);
@@ -35,12 +47,19 @@ async function scanLoop() {
                 if (!filterResult.passed) {
                     continue;
                 }
+                if (wasAlreadyAlerted(pairForFiltering.baseToken.address)) {
+                    logger.info(`🔁 Skipping duplicate passed token: ${pairForFiltering.baseToken.symbol}`);
+                    continue;
+                }
                 tokensPassed++;
                 logger.success(`\n🎯 SAFE TOKEN FOUND: ${pair.baseToken.symbol}`);
                 logger.info(`Total passed: ${tokensPassed}/${tokensFound}`);
                 const sent = await sendAlert(pairForFiltering, filterResult);
                 if (!sent) {
                     logger.error(`Failed to send alert for ${pair.baseToken.symbol}`);
+                }
+                else {
+                    rememberPassedToken(pairForFiltering.baseToken.address);
                 }
                 await new Promise(r => setTimeout(r, 1000));
             }
@@ -54,10 +73,13 @@ async function scanLoop() {
     catch (error) {
         logger.error('Error in scan loop:', error.message);
     }
+    finally {
+        isScanRunning = false;
+    }
 }
 async function ensureLiquidityCheck(initialPair) {
     let latestPair = initialPair;
-    let liquidity = latestPair.liquidity?.usd || 0;
+    let liquidity = parseLiquidity(latestPair.liquidity?.usd);
     if (liquidity > 0) {
         return latestPair;
     }
@@ -65,7 +87,7 @@ async function ensureLiquidityCheck(initialPair) {
     for (let attempt = 1; attempt <= LIQUIDITY_RECHECK_ATTEMPTS; attempt++) {
         await new Promise(r => setTimeout(r, LIQUIDITY_RECHECK_DELAY_MS));
         latestPair = await refreshPairData(latestPair);
-        liquidity = latestPair.liquidity?.usd || 0;
+        liquidity = parseLiquidity(latestPair.liquidity?.usd);
         if (liquidity > 0) {
             logger.info(`   Liquidity refreshed for ${latestPair.baseToken.symbol}: $${liquidity.toFixed(0)}`);
             return latestPair;
@@ -73,6 +95,51 @@ async function ensureLiquidityCheck(initialPair) {
     }
     logger.info(`   Liquidity remains $0 for ${latestPair.baseToken.symbol} after retries`);
     return latestPair;
+}
+function parseLiquidity(value) {
+    if (typeof value === 'number')
+        return Number.isFinite(value) ? value : 0;
+    if (typeof value === 'string') {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+}
+function loadPassedTokenAddresses() {
+    try {
+        if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
+        if (!fs.existsSync(PASSED_TOKENS_FILE)) {
+            return new Set();
+        }
+        const raw = fs.readFileSync(PASSED_TOKENS_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+            return new Set();
+        }
+        return new Set(parsed
+            .filter((value) => typeof value === 'string')
+            .map(value => value.toLowerCase()));
+    }
+    catch {
+        return new Set();
+    }
+}
+function savePassedTokenAddresses() {
+    try {
+        fs.writeFileSync(PASSED_TOKENS_FILE, JSON.stringify(Array.from(passedTokenAddresses.values())));
+    }
+    catch (error) {
+        logger.warn(`Could not persist passed token list: ${error?.message || error}`);
+    }
+}
+function wasAlreadyAlerted(address) {
+    return passedTokenAddresses.has(address.toLowerCase());
+}
+function rememberPassedToken(address) {
+    passedTokenAddresses.add(address.toLowerCase());
+    savePassedTokenAddresses();
 }
 function healthCheck() {
     const now = Date.now();
@@ -90,9 +157,23 @@ function startScanner() {
     logger.info(`Poll interval: ${config.scanner.pollInterval}ms (${config.scanner.pollInterval / 1000}s)`);
     logger.info(`Filters: Liq≥$${config.scanner.minLiquidity}, Vol5m≥$${config.scanner.minVolume5m}, MC=${config.scanner.minMarketCap}-${config.scanner.maxMarketCap}, Age≤${config.scanner.maxAgeMinutes}m`);
     logger.info('Press Ctrl+C to stop\n');
-    scanLoop();
-    setInterval(scanLoop, config.scanner.pollInterval);
+    void runScannerLoop();
     setInterval(healthCheck, 300000);
+}
+async function runScannerLoop() {
+    while (true) {
+        const startedAt = Date.now();
+        await scanLoop();
+        const elapsed = Date.now() - startedAt;
+        const waitMs = Math.max(0, config.scanner.pollInterval - elapsed);
+        if (waitMs === 0) {
+            continue;
+        }
+        await new Promise((resolve) => {
+            scannerLoopTimer = setTimeout(() => resolve(), waitMs);
+        });
+        scannerLoopTimer = null;
+    }
 }
 async function main() {
     console.log('\n╔══════════════════════════════════════════╗');
@@ -123,6 +204,9 @@ process.on('unhandledRejection', (reason) => {
     logger.warn('Scanner continues running...');
 });
 process.on('SIGINT', () => {
+    if (scannerLoopTimer) {
+        clearTimeout(scannerLoopTimer);
+    }
     logger.info('\n\n━━━ Shutdown Signal Received ━━━');
     logger.info(`Total scans: ${scanCount}`);
     logger.info(`Tokens found: ${tokensFound}`);
@@ -131,6 +215,9 @@ process.on('SIGINT', () => {
     process.exit(0);
 });
 process.on('SIGTERM', () => {
+    if (scannerLoopTimer) {
+        clearTimeout(scannerLoopTimer);
+    }
     logger.info('\nShutting down gracefully...\n');
     process.exit(0);
 });

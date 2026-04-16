@@ -9,9 +9,9 @@ class CircuitBreaker {
     failureCount = 0;
     successCount = 0;
     lastFailureTime = 0;
-    failureThreshold = 5;
+    failureThreshold = 7;
     successThreshold = 2;
-    timeout = 60000;
+    timeout = 30000;
     recordSuccess() {
         this.failureCount = 0;
         if (this.state === CircuitState.HALF_OPEN) {
@@ -89,6 +89,9 @@ class RequestQueue {
 }
 const circuitBreaker = new CircuitBreaker();
 const requestQueue = new RequestQueue();
+const hostLastRequestAt = new Map();
+const HOST_MIN_INTERVAL_MS = 180;
+const MAX_RETRY_DELAY_MS = 12000;
 function addJitter(delay) {
     const jitter = Math.random() * 0.3 * delay;
     return delay + jitter;
@@ -106,27 +109,37 @@ function sanitizeUrl(url) {
     }
 }
 export async function fetchWithRetry(url, options = {}) {
-    const { timeout = 10000, retries = 3, retryDelay = 1000, skipCircuitBreaker = false } = options;
+    const { timeout = 10000, retries = 3, retryDelay = 1000, skipCircuitBreaker = false, headers = {} } = options;
     if (!skipCircuitBreaker && !circuitBreaker.canAttempt()) {
         console.warn('[FETCH] Circuit breaker OPEN, skipping request');
         return null;
     }
     const safeUrl = sanitizeUrl(url);
+    const parsedUrl = new URL(safeUrl);
+    const isDexscreenerHost = parsedUrl.hostname.includes('dexscreener.com');
     return requestQueue.add(async () => {
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
+                await throttleHost(parsedUrl.host);
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), timeout);
                 const response = await fetch(safeUrl, {
                     signal: controller.signal,
                     headers: {
                         'User-Agent': 'MemeScanner/3.0',
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        ...(isDexscreenerHost ? {
+                            'Origin': 'https://dexscreener.com',
+                            'Referer': 'https://dexscreener.com/'
+                        } : {}),
+                        ...headers
                     }
                 });
                 clearTimeout(timeoutId);
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+                    const retryAfterSeconds = response.headers.get('retry-after');
+                    const retryAfterMs = retryAfterSeconds ? Math.max(0, Number(retryAfterSeconds) * 1000) : null;
+                    throw new HttpError(response.status, retryAfterMs);
                 }
                 const data = await response.json();
                 if (!skipCircuitBreaker) {
@@ -136,6 +149,7 @@ export async function fetchWithRetry(url, options = {}) {
             }
             catch (error) {
                 const isLastAttempt = attempt === retries;
+                const retryDelayMs = getRetryDelayMs(error, retryDelay, attempt);
                 if (isLastAttempt) {
                     console.error(`[FETCH] Failed after ${retries} attempts:`, safeUrl);
                     if (!skipCircuitBreaker) {
@@ -143,13 +157,46 @@ export async function fetchWithRetry(url, options = {}) {
                     }
                     return null;
                 }
-                const delay = addJitter(retryDelay * Math.pow(2, attempt - 1));
+                const boundedDelay = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
+                const delay = addJitter(boundedDelay);
                 console.warn(`[FETCH] Retry ${attempt}/${retries} in ${Math.floor(delay)}ms...`);
                 await sleep(delay);
             }
         }
         return null;
     });
+}
+class HttpError extends Error {
+    status;
+    retryAfterMs;
+    constructor(status, retryAfterMs = null) {
+        super(`HTTP ${status}`);
+        this.status = status;
+        this.retryAfterMs = retryAfterMs;
+    }
+}
+async function throttleHost(host) {
+    const now = Date.now();
+    const lastAt = hostLastRequestAt.get(host) || 0;
+    const elapsed = now - lastAt;
+    if (elapsed < HOST_MIN_INTERVAL_MS) {
+        await sleep(HOST_MIN_INTERVAL_MS - elapsed);
+    }
+    hostLastRequestAt.set(host, Date.now());
+}
+function getRetryDelayMs(error, baseDelayMs, attempt) {
+    if (error instanceof HttpError) {
+        if (error.retryAfterMs !== null && error.retryAfterMs > 0) {
+            return Math.min(error.retryAfterMs, MAX_RETRY_DELAY_MS);
+        }
+        if (error.status === 429) {
+            return Math.max(2000, baseDelayMs * Math.pow(2, attempt));
+        }
+        if (error.status >= 500) {
+            return Math.max(1500, baseDelayMs * Math.pow(2, attempt - 1));
+        }
+    }
+    return baseDelayMs * Math.pow(2, attempt - 1);
 }
 export function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));

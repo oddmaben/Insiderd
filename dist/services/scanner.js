@@ -1,14 +1,19 @@
 import fs from 'fs';
 import path from 'path';
-import { fetchWithRetry } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { isLiquidityLocked } from './liquidityCheck.js';
-import { checkRugStatus } from './rugcheck.js';
+import { getDexPair, getDexTokenPairs, getDexTokenPairsExpanded, searchDexPairs } from './dexscreener.js';
+import { fetchApifyDexPairs } from './apifyDex.js';
 const CACHE_FILE = path.join(process.cwd(), 'data', 'seen_pairs.json');
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CACHE_CLEANUP_INTERVAL = 3600000;
-const SEARCH_TERMS_PER_SCAN = 8;
+const SEARCH_TERMS_PER_SCAN = 4;
+const SEARCH_REQUEST_DELAY_MS = 350;
+const MAX_CANDIDATES_PER_SCAN = 30;
+const LIQUIDITY_WARMUP_MS = 4 * 60 * 1000;
+const PENDING_LIQUIDITY_WINDOW_MS = 12 * 60 * 1000;
+const MAX_PENDING_LIQUIDITY_CHECKS = 10;
 const SEARCH_TERMS = [
     'pumpfun',
     'mayhem',
@@ -66,6 +71,7 @@ function saveCache() {
     }
 }
 const seenPairs = loadCache();
+const pendingLiquidityPairs = new Map();
 let lastCleanup = Date.now();
 let searchTermCursor = 0;
 export async function fetchNewPairs() {
@@ -74,51 +80,76 @@ export async function fetchNewPairs() {
             cleanOldCache();
             lastCleanup = Date.now();
         }
-        const allPairs = [];
-        const termsForThisScan = getSearchTermsForScan();
-        const searchPromises = termsForThisScan.map(async (term) => {
-            try {
-                const url = `${config.api.dexscreener}/search?q=${encodeURIComponent(term)}`;
-                const data = await fetchWithRetry(url, {
-                    timeout: 8000,
-                    retries: 2
-                });
-                if (data?.pairs) {
-                    return data.pairs.filter(p => p.chainId?.toLowerCase() === 'solana');
-                }
+        let allPairs = [];
+        if (config.api.apifyEnabled) {
+            const apifyPairs = await fetchApifyDexPairs();
+            allPairs = apifyPairs.map(pair => normalizeDexPair(pair));
+            if (allPairs.length === 0) {
+                logger.warn('[APIFY] No usable pairs returned; falling back to Dex search discovery');
+                allPairs = await collectDexSearchPairs();
             }
-            catch (error) {
-                logger.warn(`Search term "${term}" failed:`, error);
-            }
-            return [];
-        });
-        const searchResults = await Promise.all(searchPromises);
-        searchResults.forEach(pairs => allPairs.push(...pairs));
+        }
+        else {
+            allPairs = await collectDexSearchPairs();
+        }
         if (allPairs.length === 0) {
-            logger.warn('No pairs returned from DexScreener');
+            logger.warn(config.api.apifyEnabled ? 'No pairs returned from Apify scraper' : 'No pairs returned from DexScreener');
             return [];
         }
         const uniquePairs = Array.from(new Map(allPairs.map(p => [p.pairAddress, p])).values());
         logger.info(`Fetched ${uniquePairs.length} total pairs`);
-        const unseenPairs = uniquePairs.filter(p => !seenPairs.has(p.pairAddress));
+        const unseenPairs = uniquePairs
+            .filter(p => !seenPairs.has(p.pairAddress))
+            .sort((a, b) => (b.pairCreatedAt || 0) - (a.pairCreatedAt || 0))
+            .slice(0, MAX_CANDIDATES_PER_SCAN);
+        const pendingRechecks = getPendingRecheckPairs();
+        const candidates = Array.from(new Map([...unseenPairs, ...pendingRechecks].map(p => [p.pairAddress, p])).values());
         const now = Date.now();
         const maxAge = config.scanner.maxAgeMinutes * 60 * 1000;
+        const scanStats = {
+            candidates: candidates.length,
+            skippedAge: 0,
+            deferredLiquidity: 0,
+            skippedLaunchpad: 0,
+            queuedNoLiquidity: 0,
+            passedPrefilters: 0
+        };
         const newPairs = [];
-        for (const rawPair of unseenPairs) {
+        for (const rawPair of candidates) {
             const p = await hydratePair(rawPair);
-            if (!p.pairCreatedAt)
+            const createdAt = p.pairCreatedAt || now;
+            const age = now - createdAt;
+            if (age > maxAge) {
+                pendingLiquidityPairs.delete(p.pairAddress);
+                scanStats.skippedAge++;
                 continue;
-            const age = now - p.pairCreatedAt;
-            if (age > maxAge)
+            }
+            if (shouldDeferForLiquidityWarmup(p, age)) {
+                queuePendingLiquidityPair(p, now);
+                logger.debug(`⏳ ${p.baseToken.symbol}: Deferring until liquidity settles`);
+                scanStats.deferredLiquidity++;
                 continue;
-            const isLocked = await isLiquidityLocked(p);
-            if (!isLocked)
+            }
+            const isAllowed = await isLiquidityLocked(p);
+            if (!isAllowed) {
+                scanStats.skippedLaunchpad++;
                 continue;
-            const isSafe = await checkRugStatus(p);
-            if (!isSafe)
-                continue;
+            }
+            if (!hasPositiveLiquidity(p)) {
+                if (age < LIQUIDITY_WARMUP_MS) {
+                    queuePendingLiquidityPair(p, now);
+                    scanStats.queuedNoLiquidity++;
+                    continue;
+                }
+                logger.debug(`⚠️ ${p.baseToken.symbol}: Liquidity still zero after warmup, processing anyway`);
+            }
+            pendingLiquidityPairs.delete(p.pairAddress);
+            scanStats.passedPrefilters++;
             newPairs.push(p);
         }
+        logger.info(`Scan filter stats → candidates:${scanStats.candidates}, ageSkip:${scanStats.skippedAge}, ` +
+            `deferredLiq:${scanStats.deferredLiquidity}, launchpadSkip:${scanStats.skippedLaunchpad}, ` +
+            `queuedLiq:${scanStats.queuedNoLiquidity}, prefilterPass:${scanStats.passedPrefilters}`);
         newPairs.forEach(p => {
             seenPairs.set(p.pairAddress, {
                 timestamp: Date.now(),
@@ -144,41 +175,147 @@ export async function refreshPairData(pair) {
     return hydratePair(pair);
 }
 async function hydratePair(pair) {
-    const needsHydration = !pair.liquidity?.usd || !pair.volume?.m5 || !pair.fdv;
+    const needsHydration = !pair.liquidity?.usd || !pair.volume?.m5 || !pair.fdv || !pair.priceUsd;
     if (!needsHydration) {
         return pair;
     }
     try {
-        const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
-        const data = await fetchWithRetry(url, {
-            timeout: 8000,
-            retries: 2,
-            skipCircuitBreaker: true
-        });
-        const hydrated = data?.pairs?.[0] || data?.pair;
-        if (hydrated) {
-            return {
-                ...pair,
-                ...hydrated
-            };
+        const pairSnapshot = await getDexPair(pair.chainId, pair.pairAddress);
+        const mergedPair = pairSnapshot ? mergePairs(pair, normalizeDexPair(pairSnapshot)) : pair;
+        if (hasPositiveLiquidity(mergedPair)) {
+            return mergedPair;
         }
+        if (!pair.baseToken?.address) {
+            return mergedPair;
+        }
+        const expandedPairs = await getDexTokenPairsExpanded(pair.chainId, pair.baseToken.address);
+        const expandedHydrated = pickBestHydrationPair(mergedPair, expandedPairs.map(normalizeDexPair));
+        if (expandedHydrated && hasPositiveLiquidity(expandedHydrated)) {
+            return mergePairs(mergedPair, expandedHydrated);
+        }
+        const tokenPairs = await getDexTokenPairs(pair.chainId, pair.baseToken.address);
+        const hydrated = pickBestHydrationPair(mergedPair, tokenPairs.map(normalizeDexPair));
+        if (hydrated) {
+            return mergePairs(mergedPair, hydrated);
+        }
+        logger.debug(`[LIQ-CHECK] ${pair.baseToken.symbol}: pair endpoint + token endpoints returned no positive liquidity`);
     }
     catch (error) {
         logger.debug(`Hydration failed for ${pair.baseToken.symbol}`);
     }
     return pair;
 }
-function getSearchTermsForScan() {
-    if (SEARCH_TERMS.length <= SEARCH_TERMS_PER_SCAN) {
-        return SEARCH_TERMS;
+async function collectDexSearchPairs() {
+    const allPairs = [];
+    const termsForThisScan = getSearchTermsForScan();
+    for (let i = 0; i < termsForThisScan.length; i++) {
+        const term = termsForThisScan[i];
+        try {
+            const pairs = await searchDexPairs(term);
+            if (pairs.length > 0) {
+                allPairs.push(...pairs
+                    .filter(p => p.chainId?.toLowerCase() === 'solana')
+                    .map(pair => normalizeDexPair(pair)));
+            }
+        }
+        catch (error) {
+            logger.warn(`Search term "${term}" failed:`, error);
+        }
+        if (i < termsForThisScan.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, SEARCH_REQUEST_DELAY_MS));
+        }
     }
-    const selected = [];
-    for (let i = 0; i < SEARCH_TERMS_PER_SCAN; i++) {
-        const idx = (searchTermCursor + i) % SEARCH_TERMS.length;
-        selected.push(SEARCH_TERMS[idx]);
+    return allPairs;
+}
+function pickBestHydrationPair(sourcePair, candidates) {
+    if (!candidates.length) {
+        return null;
     }
-    searchTermCursor = (searchTermCursor + SEARCH_TERMS_PER_SCAN) % SEARCH_TERMS.length;
-    return selected;
+    const chainId = sourcePair.chainId?.toLowerCase();
+    const sameChain = candidates.filter(p => p.chainId?.toLowerCase() === chainId);
+    const pool = sameChain.length ? sameChain : candidates;
+    const sortedByLiquidity = pool
+        .slice()
+        .sort((a, b) => (readLiquidityUsd(b) - readLiquidityUsd(a)));
+    const highestPositiveLiquidityPair = sortedByLiquidity.find(hasPositiveLiquidity) || null;
+    if (highestPositiveLiquidityPair) {
+        return highestPositiveLiquidityPair;
+    }
+    return sortedByLiquidity[0] || null;
+}
+function hasPositiveLiquidity(pair) {
+    return readLiquidityUsd(pair) > 0;
+}
+function readLiquidityUsd(pair) {
+    if (!pair?.liquidity) {
+        return 0;
+    }
+    const usd = toNumber(pair.liquidity.usd);
+    if (usd > 0) {
+        return usd;
+    }
+    // DexScreener sometimes omits liquidity.usd while still returning reserves.
+    // Estimate USD from reserves as a fallback so we do not treat valid pools as zero-liquidity.
+    const baseReserve = toNumber(pair.liquidity.base);
+    const quoteReserve = toNumber(pair.liquidity.quote);
+    const priceUsd = toNumber(pair.priceUsd);
+    if (baseReserve > 0 && priceUsd > 0) {
+        return baseReserve * priceUsd * 2;
+    }
+    const quoteSymbol = (pair.quoteToken?.symbol || '').toUpperCase();
+    if (quoteReserve > 0 && (quoteSymbol === 'USDC' || quoteSymbol === 'USDT' || quoteSymbol === 'USD')) {
+        return quoteReserve * 2;
+    }
+    return 0;
+}
+function shouldDeferForLiquidityWarmup(pair, ageMs) {
+    if (ageMs > LIQUIDITY_WARMUP_MS) {
+        return false;
+    }
+    const liquidityUsd = readLiquidityUsd(pair);
+    if (liquidityUsd > 0) {
+        return false;
+    }
+    return true;
+}
+function queuePendingLiquidityPair(pair, now) {
+    const existing = pendingLiquidityPairs.get(pair.pairAddress);
+    if (!existing) {
+        pendingLiquidityPairs.set(pair.pairAddress, {
+            pair,
+            firstSeenAt: now,
+            checks: 1
+        });
+        seenPairs.set(pair.pairAddress, {
+            timestamp: now,
+            pairCreatedAt: pair.pairCreatedAt || 0
+        });
+        return;
+    }
+    existing.pair = pair;
+    existing.checks += 1;
+    const expiredByChecks = existing.checks >= MAX_PENDING_LIQUIDITY_CHECKS;
+    const expiredByTime = now - existing.firstSeenAt > PENDING_LIQUIDITY_WINDOW_MS;
+    if (expiredByChecks || expiredByTime) {
+        expirePendingPair(pair.pairAddress);
+    }
+}
+function getPendingRecheckPairs() {
+    if (pendingLiquidityPairs.size === 0) {
+        return [];
+    }
+    const now = Date.now();
+    const rechecks = [];
+    for (const [address, entry] of pendingLiquidityPairs.entries()) {
+        const expiredByChecks = entry.checks >= MAX_PENDING_LIQUIDITY_CHECKS;
+        const expiredByTime = now - entry.firstSeenAt > PENDING_LIQUIDITY_WINDOW_MS;
+        if (expiredByChecks || expiredByTime) {
+            expirePendingPair(address);
+            continue;
+        }
+        rechecks.push(entry.pair);
+    }
+    return rechecks;
 }
 function cleanOldCache() {
     const now = Date.now();
@@ -222,9 +359,91 @@ export function getCacheStats() {
 }
 export function clearCache() {
     seenPairs.clear();
+    pendingLiquidityPairs.clear();
     if (fs.existsSync(CACHE_FILE)) {
         fs.unlinkSync(CACHE_FILE);
     }
     logger.info('Cache cleared (memory + file)');
+}
+function expirePendingPair(pairAddress) {
+    pendingLiquidityPairs.delete(pairAddress);
+    seenPairs.delete(pairAddress);
+}
+function getSearchTermsForScan() {
+    if (SEARCH_TERMS.length <= SEARCH_TERMS_PER_SCAN) {
+        return SEARCH_TERMS;
+    }
+    const selected = [];
+    for (let i = 0; i < SEARCH_TERMS_PER_SCAN; i++) {
+        const idx = (searchTermCursor + i) % SEARCH_TERMS.length;
+        selected.push(SEARCH_TERMS[idx]);
+    }
+    searchTermCursor = (searchTermCursor + SEARCH_TERMS_PER_SCAN) % SEARCH_TERMS.length;
+    return selected;
+}
+function normalizeDexPair(pair) {
+    return {
+        chainId: pair.chainId,
+        dexId: pair.dexId,
+        pairAddress: pair.pairAddress,
+        baseToken: pair.baseToken,
+        quoteToken: pair.quoteToken,
+        priceUsd: pair.priceUsd,
+        fdv: toNumber(pair.fdv) || toNumber(pair.marketCap) || undefined,
+        liquidity: {
+            usd: toNumber(pair.liquidity?.usd),
+            base: toNumber(pair.liquidity?.base),
+            quote: toNumber(pair.liquidity?.quote)
+        },
+        volume: {
+            m5: toNumber(pair.volume?.m5),
+            h1: toNumber(pair.volume?.h1),
+            h24: toNumber(pair.volume?.h24)
+        },
+        priceChange: {
+            m5: toNumber(pair.priceChange?.m5)
+        },
+        pairCreatedAt: pair.pairCreatedAt,
+        url: pair.url,
+        info: {
+            imageUrl: pair.info?.imageUrl
+        }
+    };
+}
+function mergePairs(base, patch) {
+    return {
+        ...base,
+        ...patch,
+        baseToken: patch.baseToken || base.baseToken,
+        quoteToken: patch.quoteToken || base.quoteToken,
+        liquidity: {
+            ...(base.liquidity || { usd: 0 }),
+            ...(patch.liquidity || {})
+        },
+        volume: {
+            ...(base.volume || { m5: 0, h1: 0, h24: 0 }),
+            ...(patch.volume || {})
+        },
+        priceChange: {
+            ...(base.priceChange || { m5: 0 }),
+            ...(patch.priceChange || {})
+        },
+        info: {
+            ...(base.info || {}),
+            ...(patch.info || {})
+        },
+        fdv: patch.fdv || base.fdv,
+        pairCreatedAt: patch.pairCreatedAt || base.pairCreatedAt
+    };
+}
+function toNumber(value) {
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : 0;
+    }
+    if (typeof value === 'string') {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
 }
 //# sourceMappingURL=scanner.js.map

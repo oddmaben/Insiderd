@@ -3,6 +3,7 @@ interface TelegramConfig {
     channelId: string;
     sendStartupMessage: boolean;
     logChatId: string;
+    logUserId?: string;
     enableLogForwarding: boolean;
 }
 interface ScannerConfig {
@@ -16,17 +17,20 @@ interface ScannerConfig {
 interface ApiConfig {
     dexscreener: string;
     birdeye: string;
+    birdeyeApiKey?: string;
+    apifyEnabled: boolean;
+    apifyApiToken?: string;
+    apifyActorId?: string;
+    apifyChain: string;
+    apifyMaxItems: number;
+    apifyTokenAddresses: string[];
     solscan: string;
     rpcUrl: string;
-}
-interface SecurityConfig {
-    maxRugcheckScore: number;
 }
 export interface Config {
     telegram: TelegramConfig;
     scanner: ScannerConfig;
     api: ApiConfig;
-    security: SecurityConfig;
     enableLogs: boolean;
 }
 export declare const config: Config;

@@ -8,6 +8,7 @@ let bot;
 let isReady = false;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
+let logChatRoutingWarningShown = false;
 const MESSAGE_RATE_LIMIT = 1000;
 let lastMessageTime = 0;
 async function rateLimitWait() {
@@ -19,6 +20,9 @@ async function rateLimitWait() {
         await new Promise(r => setTimeout(r, waitTime));
     }
     lastMessageTime = Date.now();
+}
+function getLogDestination() {
+    return config.telegram.logUserId || config.telegram.logChatId;
 }
 function getDexscreenerImageUrl(pair) {
     if (pair.info?.imageUrl) {
@@ -90,6 +94,13 @@ async function sendCallWithRetry(message, options = {}, attempt = 1) {
         return sent.message_id;
     }
     catch (error) {
+        if (targetChatId === getLogDestination() &&
+            typeof targetChatId === 'string' &&
+            targetChatId.startsWith('@') &&
+            !logChatRoutingWarningShown) {
+            logChatRoutingWarningShown = true;
+            logger.warn(`[TELEGRAM] Log chat "${targetChatId}" failed. For DM delivery, set TELEGRAM_LOG_USER_ID to your numeric chat id.`);
+        }
         if (options.photoUrl) {
             logger.warn('[TELEGRAM] Photo send failed, retrying as text message');
             return sendCallWithRetry(message, {
@@ -196,7 +207,7 @@ function formatMessage(pair, filterResult) {
     msg += `<b>✅ INSIDER PASS CALL</b>\n`;
     msg += `Insider Dinero\n`;
     msg += `${name}\n`;
-    msg += `${pair.baseToken.address}\n\n`;
+    msg += `<code>${pair.baseToken.address}</code>\n\n`;
     msg += `💰 Token Overview\n`;
     msg += `├ MC: ${mc} | ⏳ ${age}\n`;
     msg += `├ Volume: ${volume5m} | 🟢 ? | 🔴 ?\n`;
@@ -228,10 +239,10 @@ function formatTokenEvaluationLog(pair, filterResult) {
 }
 async function pinPassedAlert(messageId) {
     try {
-        await bot.telegram.pinChatMessage(config.telegram.channelId, messageId, {
+        await bot.telegram.pinChatMessage(config.telegram.logChatId, messageId, {
             disable_notification: true
         });
-        logger.success(`[TELEGRAM] Pinned passed alert (${messageId})`);
+        logger.success(`[TELEGRAM] Pinned passed alert in log chat (${messageId})`);
     }
     catch (error) {
         logger.warn(`[TELEGRAM] Could not pin alert (${messageId}): ${error?.message || error}`);
@@ -270,7 +281,7 @@ export async function sendTokenEvaluationLog(pair, filterResult) {
     const photoUrl = getDexscreenerImageUrl(pair);
     await sendCallWithRetry(message, {
         photoUrl,
-        chatId: config.telegram.logChatId
+        chatId: getLogDestination()
     });
 }
 export async function sendMissedWinnerLog(pair, status, reason, baseMc, currentMc, elapsedMinutes) {
@@ -291,7 +302,7 @@ export async function sendMissedWinnerLog(pair, status, reason, baseMc, currentM
         `${pair.url}`;
     await sendCallWithRetry(msg, {
         photoUrl: getDexscreenerImageUrl(pair),
-        chatId: config.telegram.logChatId
+        chatId: getLogDestination()
     });
 }
 export async function sendStartup() {
@@ -302,15 +313,15 @@ export async function sendStartup() {
         return;
     }
     try {
-        const msg = `✅ <b>Insider Dinero Updated</b>\n\n` +
-            `New bot update has been deployed and is now live.\n\n` +
+        const msg = `🔄 <b>meme-scanner restarted</b>\n\n` +
+            `Process is back online and scanning.\n\n` +
             `<b>Filter Settings:</b>\n` +
             `Min Liquidity: ${formatCurrency(config.scanner.minLiquidity)}\n` +
             `Min Volume (5m): ${formatCurrency(config.scanner.minVolume5m)}\n` +
             `Max Age: ${config.scanner.maxAgeMinutes} minutes\n\n` +
             `Waiting for new tokens...`;
-        await sendWithRetry(msg);
-        logger.info('Startup message sent');
+        await sendCallWithRetry(msg, { chatId: getLogDestination() });
+        logger.info('Restart message sent to log chat');
     }
     catch (error) {
         logger.warn('Could not send startup message:', error.message);

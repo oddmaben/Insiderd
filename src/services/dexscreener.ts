@@ -18,7 +18,9 @@ export interface DexScreenerPair {
   fdv?: number;
   marketCap?: number;
   liquidity?: {
-    usd: number;
+    usd?: number | string;
+    base?: number | string;
+    quote?: number | string;
   };
   volume?: {
     m5: number;

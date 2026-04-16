@@ -15,6 +15,8 @@ export interface TokenPair {
     fdv?: number;
     liquidity?: {
         usd: number;
+        base?: number;
+        quote?: number;
     };
     volume?: {
         m5: number;

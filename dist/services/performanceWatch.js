@@ -1,7 +1,7 @@
-import { config } from '../config.js';
-import { fetchWithRetry, sleep } from '../utils/fetch.js';
+import { sleep } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { sendMissedWinnerLog } from './telegram.js';
+import { getDexPair } from './dexscreener.js';
 const TARGET_MULTIPLE = 3;
 const WATCH_WINDOW_MS = 10 * 60 * 1000;
 const CHECK_INTERVAL_MS = 45_000;
@@ -41,12 +41,8 @@ async function monitorTokenPerformance(pair, watchKey, state) {
             return;
         }
         try {
-            const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
-            const data = await fetchWithRetry(url, {
-                timeout: 8000,
-                retries: 2
-            });
-            const currentMc = data?.pair?.fdv ?? 0;
+            const latestPair = await getDexPair(pair.chainId, pair.pairAddress);
+            const currentMc = latestPair?.fdv || latestPair?.marketCap || 0;
             if (currentMc > 0) {
                 const multiple = currentMc / state.baseMc;
                 if (multiple >= TARGET_MULTIPLE) {

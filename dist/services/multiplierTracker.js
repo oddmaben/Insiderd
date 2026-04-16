@@ -1,7 +1,7 @@
-import { fetchWithRetry, sleep } from '../utils/fetch.js';
-import { config } from '../config.js';
+import { sleep } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 import { sendRawCallMessage } from './telegram.js';
+import { getDexPair } from './dexscreener.js';
 const TARGET_MULTIPLIERS = [1.5, 2, 3, 5, 10, 20];
 const activeTrackers = new Map();
 function parseMarketCap(pair) {
@@ -26,7 +26,7 @@ export function startMultiplierTracking(pair, options = {}) {
         remainingTargets: [...TARGET_MULTIPLIERS],
         startedAt: Date.now(),
         photoUrl: options.photoUrl,
-        lastMessageId: options.initialMessageId
+        threadRootMessageId: options.initialMessageId
     };
     activeTrackers.set(address, state);
     logger.info(`[MULTIPLIER] Started tracking ${pair.baseToken.symbol} from MC ${baseMc}`);
@@ -48,12 +48,8 @@ async function trackLoop(pair, state) {
             return;
         }
         try {
-            const url = `${config.api.dexscreener}/pairs/${encodeURIComponent(pair.chainId)}/${encodeURIComponent(pair.pairAddress)}`;
-            const data = await fetchWithRetry(url, {
-                timeout: 8000,
-                retries: 2
-            });
-            const currentMc = data?.pair?.fdv ?? state.baseMc;
+            const latestPair = await getDexPair(pair.chainId, pair.pairAddress);
+            const currentMc = latestPair?.fdv || latestPair?.marketCap || state.baseMc;
             if (!currentMc || currentMc <= 0) {
                 logger.warn(`[MULTIPLIER] No valid MC for ${symbol} on this check`);
             }
@@ -70,13 +66,10 @@ async function trackLoop(pair, state) {
                 if (newlyHit.length > 0) {
                     const highest = Math.max(...newlyHit);
                     const msg = formatMultiplierMessage(symbol, state.baseMc, currentMc, highest);
-                    const newMessageId = await sendRawCallMessage(msg, {
+                    await sendRawCallMessage(msg, {
                         photoUrl: state.photoUrl,
-                        replyToMessageId: state.lastMessageId
+                        replyToMessageId: state.threadRootMessageId
                     });
-                    if (newMessageId) {
-                        state.lastMessageId = newMessageId;
-                    }
                     logger.success(`[MULTIPLIER] Sent ${highest}x alert for ${symbol}`);
                 }
                 if (state.remainingTargets.length === 0) {
@@ -104,10 +97,13 @@ function formatCurrencyShort(value) {
 function formatMultiplierMessage(symbol, baseMc, currentMc, hitMultiple) {
     const baseStr = formatCurrencyShort(baseMc);
     const currentStr = formatCurrencyShort(currentMc);
+    const pctMove = ((currentMc / baseMc) - 1) * 100;
+    const pctLabel = `${pctMove >= 0 ? '+' : ''}${pctMove.toFixed(1)}%`;
     const proMultiple = (hitMultiple * 1.4).toFixed(1);
     let msg = '';
     msg += `💸 $${symbol} ${hitMultiple.toFixed(1)}x | ${proMultiple}x with PRO ⚡️\n`;
     msg += `📈 ${baseStr} → ${currentStr}\n`;
+    msg += `📊 Move since call: ${pctLabel}\n`;
     msg += `PM @DCKXE for Insider access.`;
     return msg;
 }

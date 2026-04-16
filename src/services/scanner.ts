@@ -4,6 +4,7 @@ import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { isLiquidityLocked } from './liquidityCheck.js';
 import { DexScreenerPair, getDexPair, getDexTokenPairs, getDexTokenPairsExpanded, searchDexPairs } from './dexscreener.js';
+import { fetchApifyDexPairs } from './apifyDex.js';
 
 export interface TokenPair {
   chainId: string;
@@ -22,6 +23,8 @@ export interface TokenPair {
   fdv?: number;
   liquidity?: {
     usd: number;
+    base?: number;
+    quote?: number;
   };
   volume?: {
     m5: number;
@@ -55,9 +58,9 @@ const CACHE_CLEANUP_INTERVAL = 3600000;
 const SEARCH_TERMS_PER_SCAN = 4;
 const SEARCH_REQUEST_DELAY_MS = 350;
 const MAX_CANDIDATES_PER_SCAN = 30;
-const LIQUIDITY_WARMUP_MS = 2 * 60 * 1000;
-const PENDING_LIQUIDITY_WINDOW_MS = 8 * 60 * 1000;
-const MAX_PENDING_LIQUIDITY_CHECKS = 6;
+const LIQUIDITY_WARMUP_MS = 4 * 60 * 1000;
+const PENDING_LIQUIDITY_WINDOW_MS = 12 * 60 * 1000;
+const MAX_PENDING_LIQUIDITY_CHECKS = 10;
 const SEARCH_TERMS = [
   'pumpfun',
   'mayhem',
@@ -128,31 +131,20 @@ export async function fetchNewPairs(): Promise<TokenPair[]> {
       lastCleanup = Date.now();
     }
 
-    const allPairs: TokenPair[] = [];
-    const termsForThisScan = getSearchTermsForScan();
-    for (let i = 0; i < termsForThisScan.length; i++) {
-      const term = termsForThisScan[i];
-
-      try {
-        const pairs = await searchDexPairs(term);
-        if (pairs.length > 0) {
-          allPairs.push(
-            ...pairs
-              .filter(p => p.chainId?.toLowerCase() === 'solana')
-              .map(pair => normalizeDexPair(pair))
-          );
-        }
-      } catch (error) {
-        logger.warn(`Search term "${term}" failed:`, error);
+    let allPairs: TokenPair[] = [];
+    if (config.api.apifyEnabled) {
+      const apifyPairs = await fetchApifyDexPairs();
+      allPairs = apifyPairs.map(pair => normalizeDexPair(pair));
+      if (allPairs.length === 0) {
+        logger.warn('[APIFY] No usable pairs returned; falling back to Dex search discovery');
+        allPairs = await collectDexSearchPairs();
       }
-
-      if (i < termsForThisScan.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, SEARCH_REQUEST_DELAY_MS));
-      }
+    } else {
+      allPairs = await collectDexSearchPairs();
     }
 
     if (allPairs.length === 0) {
-      logger.warn('No pairs returned from DexScreener');
+      logger.warn(config.api.apifyEnabled ? 'No pairs returned from Apify scraper' : 'No pairs returned from DexScreener');
       return [];
     }
 
@@ -263,7 +255,7 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
 
   try {
     const pairSnapshot = await getDexPair(pair.chainId, pair.pairAddress);
-    const mergedPair = pairSnapshot ? mergePairs(pair, pairSnapshot) : pair;
+    const mergedPair = pairSnapshot ? mergePairs(pair, normalizeDexPair(pairSnapshot)) : pair;
     if (hasPositiveLiquidity(mergedPair)) {
       return mergedPair;
     }
@@ -294,36 +286,52 @@ async function hydratePair(pair: TokenPair): Promise<TokenPair> {
   return pair;
 }
 
+async function collectDexSearchPairs(): Promise<TokenPair[]> {
+  const allPairs: TokenPair[] = [];
+  const termsForThisScan = getSearchTermsForScan();
+  for (let i = 0; i < termsForThisScan.length; i++) {
+    const term = termsForThisScan[i];
+
+    try {
+      const pairs = await searchDexPairs(term);
+      if (pairs.length > 0) {
+        allPairs.push(
+          ...pairs
+            .filter(p => p.chainId?.toLowerCase() === 'solana')
+            .map(pair => normalizeDexPair(pair))
+        );
+      }
+    } catch (error) {
+      logger.warn(`Search term "${term}" failed:`, error);
+    }
+
+    if (i < termsForThisScan.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, SEARCH_REQUEST_DELAY_MS));
+    }
+  }
+
+  return allPairs;
+}
+
 function pickBestHydrationPair(sourcePair: TokenPair, candidates: TokenPair[]): TokenPair | null {
   if (!candidates.length) {
     return null;
   }
 
   const chainId = sourcePair.chainId?.toLowerCase();
-  const sourcePairAddress = sourcePair.pairAddress?.toLowerCase();
-  const sourceDex = sourcePair.dexId?.toLowerCase();
-  const sourceQuoteAddress = sourcePair.quoteToken?.address?.toLowerCase();
 
   const sameChain = candidates.filter(p => p.chainId?.toLowerCase() === chainId);
   const pool = sameChain.length ? sameChain : candidates;
-  const highestLiquidityPair = pool
+  const sortedByLiquidity = pool
     .slice()
-    .sort((a, b) => (readLiquidityUsd(b) - readLiquidityUsd(a)))[0] || null;
+    .sort((a, b) => (readLiquidityUsd(b) - readLiquidityUsd(a)));
 
-  const exactPair = pool.find(p => p.pairAddress?.toLowerCase() === sourcePairAddress);
-  if (exactPair && (hasPositiveLiquidity(exactPair) || !hasPositiveLiquidity(highestLiquidityPair))) {
-    return exactPair;
+  const highestPositiveLiquidityPair = sortedByLiquidity.find(hasPositiveLiquidity) || null;
+  if (highestPositiveLiquidityPair) {
+    return highestPositiveLiquidityPair;
   }
 
-  const sameDexAndQuote = pool.find(p =>
-    p.dexId?.toLowerCase() === sourceDex &&
-    p.quoteToken?.address?.toLowerCase() === sourceQuoteAddress
-  );
-  if (sameDexAndQuote && (hasPositiveLiquidity(sameDexAndQuote) || !hasPositiveLiquidity(highestLiquidityPair))) {
-    return sameDexAndQuote;
-  }
-
-  return highestLiquidityPair;
+  return sortedByLiquidity[0] || null;
 }
 
 function hasPositiveLiquidity(pair: TokenPair | null): boolean {
@@ -331,14 +339,30 @@ function hasPositiveLiquidity(pair: TokenPair | null): boolean {
 }
 
 function readLiquidityUsd(pair: TokenPair | null): number {
-  const raw = pair?.liquidity?.usd;
-  if (typeof raw === 'number') {
-    return Number.isFinite(raw) ? raw : 0;
+  if (!pair?.liquidity) {
+    return 0;
   }
-  if (typeof raw === 'string') {
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : 0;
+
+  const usd = toNumber(pair.liquidity.usd);
+  if (usd > 0) {
+    return usd;
   }
+
+  // DexScreener sometimes omits liquidity.usd while still returning reserves.
+  // Estimate USD from reserves as a fallback so we do not treat valid pools as zero-liquidity.
+  const baseReserve = toNumber(pair.liquidity.base);
+  const quoteReserve = toNumber(pair.liquidity.quote);
+  const priceUsd = toNumber(pair.priceUsd);
+
+  if (baseReserve > 0 && priceUsd > 0) {
+    return baseReserve * priceUsd * 2;
+  }
+
+  const quoteSymbol = (pair.quoteToken?.symbol || '').toUpperCase();
+  if (quoteReserve > 0 && (quoteSymbol === 'USDC' || quoteSymbol === 'USDT' || quoteSymbol === 'USD')) {
+    return quoteReserve * 2;
+  }
+
   return 0;
 }
 
@@ -352,9 +376,7 @@ function shouldDeferForLiquidityWarmup(pair: TokenPair, ageMs: number): boolean 
     return false;
   }
 
-  const volume5m = pair.volume?.m5 || 0;
-  const marketCap = pair.fdv || 0;
-  return volume5m > 0 || marketCap > 0;
+  return true;
 }
 
 function queuePendingLiquidityPair(pair: TokenPair, now: number): void {
@@ -488,7 +510,9 @@ function normalizeDexPair(pair: DexScreenerPair): TokenPair {
     priceUsd: pair.priceUsd,
     fdv: toNumber(pair.fdv) || toNumber(pair.marketCap) || undefined,
     liquidity: {
-      usd: toNumber(pair.liquidity?.usd)
+      usd: toNumber(pair.liquidity?.usd),
+      base: toNumber(pair.liquidity?.base),
+      quote: toNumber(pair.liquidity?.quote)
     },
     volume: {
       m5: toNumber(pair.volume?.m5),
