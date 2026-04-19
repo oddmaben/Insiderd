@@ -43,7 +43,9 @@ async function scanLoop(): Promise<void> {
 
     for (const pair of pairs) {
       try {
-        logger.info(`\n--- Processing: ${pair.baseToken.symbol} ---`);
+        logger.info(
+          `\n--- Processing: ${pair.baseToken.symbol} | CA: ${pair.baseToken.address} | Pair: ${pair.pairAddress} ---`
+        );
 
         const pairForFiltering = await ensureLiquidityCheck(pair);
         const filterResult = filterToken(pairForFiltering);
@@ -99,7 +101,9 @@ async function ensureLiquidityCheck(initialPair: TokenPair): Promise<TokenPair> 
     return latestPair;
   }
 
-  logger.info(`   Liquidity is $0 for ${latestPair.baseToken.symbol}; retrying data fetch...`);
+  logger.info(
+    `   Liquidity is $0 for ${latestPair.baseToken.symbol} (CA: ${latestPair.baseToken.address}, Pair: ${latestPair.pairAddress}); retrying data fetch...`
+  );
 
   for (let attempt = 1; attempt <= LIQUIDITY_RECHECK_ATTEMPTS; attempt++) {
     await new Promise(r => setTimeout(r, LIQUIDITY_RECHECK_DELAY_MS));
@@ -107,12 +111,20 @@ async function ensureLiquidityCheck(initialPair: TokenPair): Promise<TokenPair> 
     liquidity = parseLiquidity(latestPair.liquidity?.usd);
 
     if (liquidity > 0) {
-      logger.info(`   Liquidity refreshed for ${latestPair.baseToken.symbol}: $${liquidity.toFixed(0)}`);
+      logger.info(
+        `   Liquidity refreshed for ${latestPair.baseToken.symbol} (CA: ${latestPair.baseToken.address}, Pair: ${latestPair.pairAddress}): $${liquidity.toFixed(0)}`
+      );
       return latestPair;
     }
+
+    logger.info(
+      `   Retry ${attempt}/${LIQUIDITY_RECHECK_ATTEMPTS} still $0 for ${latestPair.baseToken.symbol} (CA: ${latestPair.baseToken.address}, Pair: ${latestPair.pairAddress})`
+    );
   }
 
-  logger.info(`   Liquidity remains $0 for ${latestPair.baseToken.symbol} after retries`);
+  logger.info(
+    `   Liquidity remains $0 for ${latestPair.baseToken.symbol} (CA: ${latestPair.baseToken.address}, Pair: ${latestPair.pairAddress}) after retries`
+  );
   return latestPair;
 }
 
