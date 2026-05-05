@@ -5,6 +5,7 @@ import { TokenPair } from './scanner.js';
 import { FilterResult, formatCurrency } from './filter.js';
 import { formatAge, getAgeMinutes } from './scanner.js';
 import { startMultiplierTracking } from './multiplierTracker.js';
+import { buildWinrateMessage } from './winrateStats.js';
 
 let bot: Telegraf;
 let isReady = false;
@@ -36,6 +37,16 @@ interface SendOptions {
 
 function getLogDestination(): string {
   return config.telegram.logUserId || config.telegram.logChatId;
+}
+
+function isAuthorizedWinrateChat(chatId: number): boolean {
+  const allowedRaw = config.telegram.logUserId || config.telegram.logChatId;
+  const allowed = Number(allowedRaw);
+  if (Number.isFinite(allowed)) {
+    return chatId === allowed;
+  }
+  // fallback: if no numeric id configured, allow private chat command use
+  return true;
 }
 
 function getDexscreenerImageUrl(pair: TokenPair): string {
@@ -174,6 +185,22 @@ export async function initBot(): Promise<boolean> {
       
       if (err.code === 'EFATAL' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
         logger.warn('Network error detected, will retry...');
+      }
+    });
+
+    bot.command('winrate', async (ctx) => {
+      try {
+        if (!isAuthorizedWinrateChat(ctx.chat.id)) {
+          await ctx.reply('This command is only available in the configured log DM.');
+          return;
+        }
+        const msg = buildWinrateMessage();
+        await ctx.reply(msg, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true }
+        });
+      } catch (error: any) {
+        logger.warn(`[TELEGRAM] /winrate command failed: ${error?.message || error}`);
       }
     });
 

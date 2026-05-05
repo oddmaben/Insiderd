@@ -7,6 +7,7 @@ import { filterToken } from './services/filter.js';
 import { initBot, sendAlert, sendStartup, sendErrorNotification, sendTokenEvaluationLog } from './services/telegram.js';
 import { startPerformanceWatch } from './services/performanceWatch.js';
 import { startHealthServer } from './utils/health.js';
+import { recordFilterOutcome, recordFound, recordScan } from './services/winrateStats.js';
 
 let scanCount = 0;
 let tokensFound = 0;
@@ -29,6 +30,7 @@ async function scanLoop(): Promise<void> {
   isScanRunning = true;
   try {
     scanCount++;
+    recordScan();
     logger.info(`\n━━━ Scan #${scanCount} ━━━`);
     
     const pairs = await fetchNewPairs();
@@ -39,6 +41,7 @@ async function scanLoop(): Promise<void> {
     }
 
     tokensFound += pairs.length;
+    recordFound(pairs.length);
     logger.info(`Processing ${pairs.length} new pair(s)...`);
 
     for (const pair of pairs) {
@@ -49,6 +52,7 @@ async function scanLoop(): Promise<void> {
 
         const pairForFiltering = await ensureLiquidityCheck(pair);
         const filterResult = filterToken(pairForFiltering);
+        recordFilterOutcome(filterResult);
         await sendTokenEvaluationLog(pairForFiltering, filterResult);
         startPerformanceWatch(pairForFiltering, {
           status: filterResult.passed ? 'PASSED' : 'REJECTED',
