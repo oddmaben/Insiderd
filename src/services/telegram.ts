@@ -12,6 +12,7 @@ let isReady = false;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let logChatRoutingWarningShown = false;
+let botPollingStarted = false;
 
 const MESSAGE_RATE_LIMIT = 1000;
 let lastMessageTime = 0;
@@ -178,6 +179,15 @@ async function sendCallWithRetry(
 
 export async function initBot(): Promise<boolean> {
   try {
+    if (bot && botPollingStarted) {
+      try {
+        bot.stop('reinit');
+      } catch {
+        // ignore: best effort stop before reinitializing
+      }
+      botPollingStarted = false;
+    }
+
     bot = new Telegraf(config.telegram.botToken);
 
     bot.catch((err: any) => {
@@ -220,6 +230,12 @@ export async function initBot(): Promise<boolean> {
     if (!connected) {
       throw new Error('Failed to connect after 3 attempts');
     }
+
+    await bot.launch({
+      dropPendingUpdates: true
+    });
+    botPollingStarted = true;
+    logger.info('Telegram command listener started');
     
     isReady = true;
     reconnectAttempts = 0;
