@@ -8,6 +8,7 @@ interface PersistentWinrateStats {
   totalPassed: number;
   totalRejected: number;
   rejectedReasons: Record<string, number>;
+  multiplierHits: Record<string, number>;
   updatedAt: number;
 }
 
@@ -17,6 +18,7 @@ interface SessionWinrateStats {
   found: number;
   passed: number;
   rejected: number;
+  multiplierHits: Record<string, number>;
 }
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -28,8 +30,11 @@ const sessionStats: SessionWinrateStats = {
   scans: 0,
   found: 0,
   passed: 0,
-  rejected: 0
+  rejected: 0,
+  multiplierHits: {}
 };
+
+export const WINRATE_MULTIPLIER_BUCKETS = [1.5, 2, 3, 4, 5, 6, 8];
 
 let persistentStats: PersistentWinrateStats = loadPersistentStats();
 
@@ -45,6 +50,7 @@ function loadPersistentStats(): PersistentWinrateStats {
         totalPassed: 0,
         totalRejected: 0,
         rejectedReasons: {},
+        multiplierHits: {},
         updatedAt: Date.now()
       };
     }
@@ -57,6 +63,7 @@ function loadPersistentStats(): PersistentWinrateStats {
       totalPassed: parsed.totalPassed || 0,
       totalRejected: parsed.totalRejected || 0,
       rejectedReasons: parsed.rejectedReasons || {},
+      multiplierHits: parsed.multiplierHits || {},
       updatedAt: parsed.updatedAt || Date.now()
     };
   } catch {
@@ -66,6 +73,7 @@ function loadPersistentStats(): PersistentWinrateStats {
       totalPassed: 0,
       totalRejected: 0,
       rejectedReasons: {},
+      multiplierHits: {},
       updatedAt: Date.now()
     };
   }
@@ -161,5 +169,29 @@ export function buildWinrateMessage(): string {
     });
   }
 
+  msg += '\n<b>Multiplier hit counts</b>\n';
+  WINRATE_MULTIPLIER_BUCKETS.forEach((bucket) => {
+    const key = formatBucketKey(bucket);
+    const sessionCount = sessionStats.multiplierHits[key] || 0;
+    const lifetimeCount = persistentStats.multiplierHits[key] || 0;
+    msg += `• ${key}x: session ${sessionCount} | lifetime ${lifetimeCount}\n`;
+  });
+
   return msg.trim();
+}
+
+export function recordMultiplierHits(hits: number[]): void {
+  if (!hits.length) return;
+
+  hits.forEach((bucket) => {
+    const key = formatBucketKey(bucket);
+    sessionStats.multiplierHits[key] = (sessionStats.multiplierHits[key] || 0) + 1;
+    persistentStats.multiplierHits[key] = (persistentStats.multiplierHits[key] || 0) + 1;
+  });
+
+  savePersistentStats();
+}
+
+function formatBucketKey(value: number): string {
+  return Number.isInteger(value) ? `${value}` : `${value}`;
 }

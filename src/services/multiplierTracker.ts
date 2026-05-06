@@ -3,12 +3,14 @@ import { logger } from '../utils/logger.js';
 import { TokenPair } from './scanner.js';
 import { sendRawCallMessage } from './telegram.js';
 import { getDexPair } from './dexscreener.js';
+import { recordMultiplierHits, WINRATE_MULTIPLIER_BUCKETS } from './winrateStats.js';
 
 const TARGET_MULTIPLIERS = [1.5, 2, 3, 5, 10, 20];
 
 interface TrackingState {
   baseMc: number;
   remainingTargets: number[];
+  remainingWinrateBuckets: number[];
   startedAt: number;
   photoUrl?: string;
   threadRootMessageId?: number;
@@ -47,6 +49,7 @@ export function startMultiplierTracking(pair: TokenPair, options: StartTrackingO
   const state: TrackingState = {
     baseMc,
     remainingTargets: [...TARGET_MULTIPLIERS],
+    remainingWinrateBuckets: [...WINRATE_MULTIPLIER_BUCKETS],
     startedAt: Date.now(),
     photoUrl: options.photoUrl,
     threadRootMessageId: options.initialMessageId
@@ -85,6 +88,18 @@ async function trackLoop(pair: TokenPair, state: TrackingState): Promise<void> {
         logger.warn(`[MULTIPLIER] No valid MC for ${symbol} on this check`);
       } else {
         const multiple = currentMc / state.baseMc;
+
+        const bucketHits: number[] = [];
+        state.remainingWinrateBuckets = state.remainingWinrateBuckets.filter(bucket => {
+          if (multiple >= bucket) {
+            bucketHits.push(bucket);
+            return false;
+          }
+          return true;
+        });
+        if (bucketHits.length > 0) {
+          recordMultiplierHits(bucketHits);
+        }
 
         const newlyHit: number[] = [];
         state.remainingTargets = state.remainingTargets.filter(target => {

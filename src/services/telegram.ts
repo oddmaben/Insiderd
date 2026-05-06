@@ -13,6 +13,7 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let logChatRoutingWarningShown = false;
 let botPollingStarted = false;
+const LISTENER_LAUNCH_TIMEOUT_MS = 6000;
 
 const MESSAGE_RATE_LIMIT = 1000;
 let lastMessageTime = 0;
@@ -231,11 +232,7 @@ export async function initBot(): Promise<boolean> {
       throw new Error('Failed to connect after 3 attempts');
     }
 
-    await bot.launch({
-      dropPendingUpdates: true
-    });
-    botPollingStarted = true;
-    logger.info('Telegram command listener started');
+    await startCommandListener();
     
     isReady = true;
     reconnectAttempts = 0;
@@ -244,6 +241,40 @@ export async function initBot(): Promise<boolean> {
   } catch (error: any) {
     logger.error('Failed to initialize bot:', error.message);
     return false;
+  }
+}
+
+async function startCommandListener(): Promise<void> {
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  } catch {
+    // ignore: webhook may not be set
+  }
+
+  const launchPromise = bot.launch({
+    dropPendingUpdates: true
+  });
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Command listener launch timed out')), LISTENER_LAUNCH_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([launchPromise, timeoutPromise]);
+    botPollingStarted = true;
+    logger.info('Telegram command listener started');
+  } catch (error: any) {
+    logger.warn(`[TELEGRAM] Command listener startup delayed: ${error?.message || error}`);
+    // Do not block scanner startup if Telegram polling is slow.
+    // Launch continues in background; command handling may become active shortly after.
+    void launchPromise
+      .then(() => {
+        botPollingStarted = true;
+        logger.info('Telegram command listener started (background)');
+      })
+      .catch((launchError: any) => {
+        logger.warn(`[TELEGRAM] Command listener failed: ${launchError?.message || launchError}`);
+      });
   }
 }
 
